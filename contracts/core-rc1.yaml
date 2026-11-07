@@ -1,0 +1,335 @@
+contract_id: ai-company-os.core
+version: 0.1.0-rc1
+status: review_candidate_not_implemented
+source_stages:
+- M1.1
+- M1.2
+- M1.3
+- M2.1
+- M2.2
+- M2.3
+- M3.1
+- M3.2
+- M3.3
+- M4.1
+- M4.2
+scope:
+- organization
+- work
+- knowledge
+- governance
+- company_composition
+- runtime
+non_goals:
+- framework_selection
+- database_selection
+- UI_build
+- new_role_catalog
+- new_industry_pack
+normative_fixes:
+- id: FIX-01
+  topic: Report review
+  decision: Submitted report version is immutable; Review is the authoritative acceptance decision.
+- id: FIX-02
+  topic: Assignment/accountability
+  decision: ReassignTask and TransferAccountability are distinct authorized commands.
+- id: FIX-03
+  topic: Activation readiness
+  decision: activation_ready is a validation result, not a Company state.
+- id: FIX-04
+  topic: Tenant-bound identity
+  decision: AgentIdentity belongs to one company; runtime and model may be shared.
+- id: FIX-05
+  topic: Service requests
+  decision: Cross-department ServiceRequest is linked to the requesting task and fulfilled through the target
+    unit’s own task chain.
+- id: FIX-06
+  topic: Actor types
+  decision: Agent, human and system_service are distinct authenticated actor kinds.
+- id: FIX-07
+  topic: Approval usage
+  decision: Consumed approval binds to one operation attempt, not to success.
+- id: FIX-08
+  topic: Position occupancy
+  decision: Reference model has at most one active primary appointment per Position.
+- id: FIX-09
+  topic: Knowledge verification
+  decision: Accepted report does not automatically verify its claims.
+- id: FIX-10
+  topic: Unknown external result
+  decision: Unknown operations require reconciliation before possible redispatch.
+canonical_states:
+  task:
+  - draft
+  - ready
+  - assigned
+  - in_progress
+  - blocked
+  - submitted
+  - under_review
+  - changes_requested
+  - accepted
+  - closed
+  - failed
+  - cancelled
+  delegation:
+  - proposed
+  - offered
+  - accepted
+  - fulfilled
+  - rejected
+  - declined
+  - revoked
+  - expired
+  - terminated
+  report_version:
+  - draft
+  - submitted
+  review_decision:
+  - accepted
+  - changes_requested
+  - rejected
+  approval:
+  - draft
+  - pending
+  - approved
+  - denied
+  - cancelled
+  - expired
+  - consumed
+  - revoked
+  company:
+  - provisioning
+  - provisioning_failed
+  - inactive
+  - active
+  - paused
+  - suspended
+  - archived
+  operation_attempt:
+  - planned
+  - authorized
+  - dispatched
+  - succeeded
+  - failed
+  - unknown
+  - reconciling
+  - unresolved
+transition_guards:
+- command: ProvisionCompany
+  actor: Owner or authorized company creator
+  guards: Validated plan; approval bound to exact plan_hash; unique idempotency key
+  result: Creates Company+positions inactive; records audit
+- command: AssignAppointment
+  actor: Authorized staffing manager
+  guards: Company match; valid role and capabilities; one active primary occupant; no SoD conflict
+  result: Creates Appointment; records audit
+- command: CreateTask
+  actor: Authorized requester
+  guards: Single accountable owner; criteria; correct company; valid parent relation
+  result: Creates task in draft; records audit
+- command: AssignTask
+  actor: Authorized task owner or manager
+  guards: Task ready; valid assignee; capability and capacity; accepted assignment
+  result: Moves ready to assigned; records audit
+- command: StartRun
+  actor: Assigned agent with active appointment
+  guards: Company active; task assigned/in_progress; runtime and current authorization valid
+  result: Creates run lease; task starts when appropriate
+- command: ProposeDelegation
+  actor: Assigned accountable or authorized manager
+  guards: Scope, budget, depth and recipient eligible; no task cycle
+  result: Creates proposed delegation and linked child task per policy
+- command: SubmitReport
+  actor: Authorized report author
+  guards: Existing task and evidence references; submitted version immutable
+  result: Stores submitted report version and audit
+- command: ReviewReport
+  actor: Authorized reviewer
+  guards: Correct immutable report revision; independent if policy requires; evidence access
+  result: Stores independent Review decision; updates derived report view
+- command: AcceptTask
+  actor: Authorized reviewer/accountable controller
+  guards: Reports reviewed; criteria satisfied; mandatory children accepted/waived; approvals complete
+  result: Moves under_review to accepted with audit
+- command: TransferAccountability
+  actor: Authorized current owner/manager
+  guards: Valid receiving appointment; explicit acceptance; historical record preserved
+  result: Changes current accountability and records history
+- command: ApproveAction
+  actor: Authorized approver
+  guards: Explicit subject operation, resource, artifact digest, expiry and SoD
+  result: Stores immutable approval decision
+- command: ExecuteExternalAction
+  actor: Authorized actor and approved attempt
+  guards: Latest authorization; bound approval if required; idempotency/reconciliation guard
+  result: Creates one OperationAttempt; outcome tracked independently
+- command: PauseCompany
+  actor: Owner or authorized operator
+  guards: Company active; safe shutdown/recovery policy
+  result: Blocks new runs, checkpoints in-flight, preserves records
+- command: PromoteMemory
+  actor: Authorized scope owner
+  guards: Provenance, access, verification class and retention policy
+  result: Activates scoped memory with verification state, not assumed verified
+invariant_matrix:
+- id: INV-001
+  rule: Agent identity is independent of position and run
+  positive_case: Switch model, preserve identity and history
+  negative_case: Switching model replaces identity or history
+  positive_case_id: INV-001-P
+  negative_case_id: INV-001-N
+- id: INV-002
+  rule: Authorized agent action carries company, identity, active appointment
+  positive_case: Authorized command with all matching context passes
+  negative_case: Command without active appointment changes state
+  positive_case_id: INV-002-P
+  negative_case_id: INV-002-N
+- id: INV-003
+  rule: Reporting hierarchy is acyclic
+  positive_case: CEO-rooted reporting tree validates
+  negative_case: Manager A->B and B->A is accepted
+  positive_case_id: INV-003-P
+  negative_case_id: INV-003-N
+- id: INV-004
+  rule: Every task has exactly one accountable owner
+  positive_case: One accountable appointment on task validates
+  negative_case: Two simultaneous accountable owners accepted
+  positive_case_id: INV-004-P
+  negative_case_id: INV-004-N
+- id: INV-005
+  rule: Delegation does not remove parent accountability
+  positive_case: Child assigned while parent retains owner
+  negative_case: Parent owner silently cleared by delegation
+  positive_case_id: INV-005-P
+  negative_case_id: INV-005-N
+- id: INV-006
+  rule: Report acceptance and task acceptance are separate
+  positive_case: Report accepted; task remains under_review until gates pass
+  negative_case: Accepted report automatically closes task
+  positive_case_id: INV-006-P
+  negative_case_id: INV-006-N
+- id: INV-007
+  rule: Mandatory children require acceptance or authorized waiver
+  positive_case: All required children accepted or explicitly waived
+  negative_case: Mandatory child in_progress yet parent accepted
+  positive_case_id: INV-007-P
+  negative_case_id: INV-007-N
+- id: INV-008
+  rule: Independent review checks identity and delegation dependency
+  positive_case: Independent eligible reviewer accepted
+  negative_case: Implementer reviews own work via another appointment
+  positive_case_id: INV-008-P
+  negative_case_id: INV-008-N
+- id: INV-009
+  rule: Delegated authority cannot exceed task and policy bounds
+  positive_case: Read-only subagent delegated under write-capable parent
+  negative_case: Subagent receives broader data or deploy authority
+  positive_case_id: INV-009-P
+  negative_case_id: INV-009-N
+- id: INV-010
+  rule: Approvals are bound to a specific action and context
+  positive_case: Approval matches operation, resource, revision, validity
+  negative_case: Approval reused for different artifact or expired operation
+  positive_case_id: INV-010-P
+  negative_case_id: INV-010-N
+- id: INV-011
+  rule: External operation outcome is recorded separately from approval
+  positive_case: Approved action has distinct succeeded/failed/unknown attempt
+  negative_case: Approval status alone marks deployment succeeded
+  positive_case_id: INV-011-P
+  negative_case_id: INV-011-N
+- id: INV-012
+  rule: Organization changes preserve historical ownership
+  positive_case: Old report retains former manager after revision
+  negative_case: Manager change rewrites previous report recipient
+  positive_case_id: INV-012-P
+  negative_case_id: INV-012-N
+- id: INV-013
+  rule: Ending appointment does not erase history and evidence
+  positive_case: Old identity and tasks remain after handoff
+  negative_case: Ending appointment cascades deletion of prior reports
+  positive_case_id: INV-013-P
+  negative_case_id: INV-013-N
+- id: INV-014
+  rule: Memory cannot replace source operational records
+  positive_case: Memory links to report and evidence
+  negative_case: Summary stored while source report silently discarded
+  positive_case_id: INV-014-P
+  negative_case_id: INV-014-N
+- id: INV-015
+  rule: Report acceptance does not verify all claims
+  positive_case: Accepted research report keeps hypothesis unverified
+  negative_case: All claims automatically marked verified upon acceptance
+  positive_case_id: INV-015-P
+  negative_case_id: INV-015-N
+- id: INV-016
+  rule: Tenant and customer boundaries require authorization
+  positive_case: In-scope retrieval returns authorized project source
+  negative_case: Cross-company or unauthorized customer source is returned
+  positive_case_id: INV-016-P
+  negative_case_id: INV-016-N
+- id: INV-017
+  rule: Active company does not imply all capabilities ready
+  positive_case: Unavailable capability causes task to wait
+  negative_case: Unavailable frontend capability starts production work
+  positive_case_id: INV-017-P
+  negative_case_id: INV-017-N
+- id: INV-018
+  rule: Pause preserves records and blocks new operational runs
+  positive_case: Pause retains identity, tasks and history
+  negative_case: Pause deletes records or starts a new operational run
+  positive_case_id: INV-018-P
+  negative_case_id: INV-018-N
+- id: INV-019
+  rule: Critical state changes produce durable audit events
+  positive_case: Task state and audit event commit together
+  negative_case: Task accepted with no durable audit event
+  positive_case_id: INV-019-P
+  negative_case_id: INV-019-N
+- id: INV-020
+  rule: Retention and deletion apply to derived content
+  positive_case: Required deletion covers index and cache copies
+  negative_case: Deleted sensitive source remains searchable in derived index
+  positive_case_id: INV-020-P
+  negative_case_id: INV-020-N
+cross_domain_scenarios:
+- id: FLOW-01
+  title: Hierarchical happy path
+  expected: Owner -> CEO -> CTO -> Engineering Manager -> Backend -> research subagent; reviewed reports return
+    upward; trace to evidence; CEO final report without unsupported claims.
+- id: FLOW-02
+  title: QA rejects work
+  expected: Developer report submitted; independent QA finds failure; parent stays non-accepted; repair produces
+    new immutable report version.
+- id: FLOW-03
+  title: Manager replacement mid-task
+  expected: Historical report recipient unchanged; pending work requires explicit transfer; revoked appointment
+    cannot act.
+- id: FLOW-04
+  title: Pause during external operation
+  expected: No new runs after pause; in-flight operation outcome reconciled; unknown does not cause blind retry.
+- id: FLOW-05
+  title: Cross-department cost analysis
+  expected: PM requests Finance service; CFO assigns analyst internally; Finance review; controlled report to
+    PM; no reporting-line mutation.
+- id: FLOW-06
+  title: Hybrid blueprint
+  expected: Software+Game packs share business functions, preserve separate roles where ambiguous, reject graph
+    cycles and authority escalation.
+concurrency_and_external_guarantees:
+  internal: State change and required audit/outbox intent commit atomically within owned consistency boundary.
+  idempotency: Same scoped key and same payload returns prior result; same key different payload is conflict.
+  external: No claim of exactly-once external side effects; use safe reconciliation and verified idempotency where
+    available.
+  authorization: Revalidate at execution boundary; previously permitted is not permanent.
+freeze_gates:
+  design_reference: conditional_go
+  autonomous_external_execution: no_go_until_implemented_and_tested
+  requirements:
+  - All 20 positive and negative tests implemented and pass
+  - Cross-domain scenarios implemented and pass
+  - State transition guards exhaustive and deterministic
+  - Permission-deny and tenant-isolation tests pass
+  - In-flight recovery and unknown external outcome tested
+  - Canonical data schemas machine-validated and versioned
