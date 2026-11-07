@@ -122,6 +122,8 @@ class Store:
         """Fixture-only single-transaction setup, never a public provisioning API."""
         if not self.fixture_bootstrap:
             raise DomainError('BOOTSTRAP_DISABLED')
+        if not positions:
+            raise DomainError('ORG_CEO_REQUIRED')
         with self.tx():
             self.db.execute('INSERT INTO companies(id) VALUES (?)',(company,))
             self.audit(company,'company',company,'company.provisioned','system:fixture',{})
