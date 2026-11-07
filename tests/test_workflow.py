@@ -80,6 +80,7 @@ class WorkflowTests(unittest.TestCase):
 
     def review_accept(self,reviewer,child_task,report):
         actor=self.actors[reviewer]
+        self.w.begin_review(actor,report,1,'begin-'+report)
         self.w.review_report(actor,report,1,'REVIEW-'+report,'accepted','Source references checked',
                              'review-'+report)
         child=self.store.task(actor,child_task)
@@ -107,6 +108,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0],4)
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM reports').fetchone()[0],5)
         # Owner approval, true external verification and real model runs remain out of scope.
+
+    def test_create_task_cannot_bypass_delegation_with_existing_parent(self):
+        self.denies('AUTH_DELEGATION_REQUIRED',lambda:self.store.create_task(
+            self.ceo,'UNAUTHORIZED-CHILD','Bypass','APPOINT-CEO','APPOINT-CEO',
+            'bypass-parent',parent_id='ROOT'))
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM tasks').fetchone()[0],1)
+
+    def test_combined_roles_may_delegate_but_cannot_self_review(self):
+        # Combining two positions is valid; independent review is still identity-based.
+        self.store.db.execute("UPDATE appointments SET agent_id='AGT-CEO' WHERE id='APPOINT-CTO'")
+        combined=Actor('COMPANY-DEMO-001','AGT-CEO','APPOINT-CTO')
+        result=self.w.offer_delegation(self.ceo,'ROOT','COMBINED','COMBINED-TASK',
+                                       'APPOINT-CTO','Scoped work',4,'combined-offer')
+        self.assertEqual(result['state'],'offered')
+        self.w.accept_delegation(combined,'COMBINED',1,'combined-accept')
+        self.w.start_task(combined,'COMBINED-TASK',1,'combined-start')
+        evidence_hash=hashlib.sha256(b'test').hexdigest()
+        self.w.add_evidence(combined,'COMBINED-TASK','EV-COMB','fixture://combined',evidence_hash,'ev-comb')
+        self.w.submit_report(combined,'COMBINED-TASK','R-COMB',1,'Result',2,'report-comb',
+                             evidence_ids=('EV-COMB',))
+        self.denies('CONFLICT_SAME_AGENT_IDENTITY',lambda:self.w.begin_review(
+            self.ceo,'R-COMB',1,'begin-comb'))
 
     def test_only_direct_report_can_receive_delegation(self):
         self.denies('AUTH_NOT_DIRECT_REPORT',lambda:self.w.offer_delegation(
@@ -188,8 +211,8 @@ class WorkflowTests(unittest.TestCase):
     def test_review_cannot_be_performed_by_author(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
         self.evidence_report('CTO','CTO-TASK','R-CTO')
-        self.denies('AUTH_NOT_REPORT_REVIEWER',lambda:self.w.review_report(
-            self.actors['CTO'],'R-CTO',1,'REV1','accepted','self','rev-self'))
+        self.denies('AUTH_NOT_REPORT_REVIEWER',lambda:self.w.begin_review(
+            self.actors['CTO'],'R-CTO',1,'begin-self'))
 
     def test_same_identity_different_appointment_not_independent(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
@@ -197,25 +220,27 @@ class WorkflowTests(unittest.TestCase):
         # Fixture: CEO and CTO now use same permanent identity, though appointments differ.
         self.store.db.execute("UPDATE appointments SET agent_id='AGT-CTO' WHERE id='APPOINT-CEO'")
         fake_independent=Actor('COMPANY-DEMO-001','AGT-CTO','APPOINT-CEO')
-        self.denies('CONFLICT_SAME_AGENT_IDENTITY',lambda:self.w.review_report(
-            fake_independent,'R-CTO',1,'REV1','accepted','not independent','fake-review'))
+        self.denies('CONFLICT_SAME_AGENT_IDENTITY',lambda:self.w.begin_review(
+            fake_independent,'R-CTO',1,'begin-fake'))
 
     def test_review_and_task_acceptance_are_distinct(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
         self.evidence_report('CTO','CTO-TASK','R-CTO')
+        self.w.begin_review(self.ceo,'R-CTO',1,'begin-review')
         review=self.w.review_report(self.ceo,'R-CTO',1,'REV','accepted','Checked citations','review')
         self.assertEqual(review['task_state'],'under_review')
         self.assertEqual(self.store.task(self.ceo,'CTO-TASK')['state'],'under_review')
-        self.w.accept_task(self.ceo,'CTO-TASK',4,'accept')
+        self.w.accept_task(self.ceo,'CTO-TASK',5,'accept')
         self.assertEqual(self.store.task(self.ceo,'CTO-TASK')['state'],'accepted')
 
     def test_child_incomplete_blocks_parent_acceptance(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
         self.delegate('CTO','MANAGER','CTO-TASK','MANAGER-TASK')
         self.evidence_report('CTO','CTO-TASK','R-CTO')
+        self.w.begin_review(self.ceo,'R-CTO',1,'begin-review')
         self.w.review_report(self.ceo,'R-CTO',1,'REV','accepted','Checked sources','review')
         self.denies('STATE_REQUIRED_CHILD_NOT_ACCEPTED',lambda:self.w.accept_task(
-            self.ceo,'CTO-TASK',4,'accept'))
+            self.ceo,'CTO-TASK',5,'accept'))
 
     def test_accepted_child_must_be_in_parent_report_sources(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
@@ -224,35 +249,56 @@ class WorkflowTests(unittest.TestCase):
         self.review_accept('CTO','MANAGER-TASK','R-MANAGER')
         # CTO can cite its own evidence, but cannot suppress accepted child results.
         self.evidence_report('CTO','CTO-TASK','R-CTO')
+        self.w.begin_review(self.ceo,'R-CTO',1,'begin-review')
         self.w.review_report(self.ceo,'R-CTO',1,'REV','accepted','Checked','review')
         self.denies('STATE_CHILD_EVIDENCE_NOT_LINKED',lambda:self.w.accept_task(
-            self.ceo,'CTO-TASK',4,'accept'))
+            self.ceo,'CTO-TASK',5,'accept'))
 
     def test_offered_child_blocks_parent_acceptance(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
         self.w.offer_delegation(self.actors['CTO'],'CTO-TASK','OFFER','PENDING',
                                 'APPOINT-MANAGER','Pending work',2,'offer')
         self.evidence_report('CTO','CTO-TASK','R-CTO')
+        self.w.begin_review(self.ceo,'R-CTO',1,'begin-review')
         self.w.review_report(self.ceo,'R-CTO',1,'REV','accepted','Checked','review')
         self.denies('STATE_PENDING_DELEGATION',lambda:self.w.accept_task(
-            self.ceo,'CTO-TASK',4,'accept'))
+            self.ceo,'CTO-TASK',5,'accept'))
 
     def test_immutable_submitted_report_and_review(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
         self.evidence_report('CTO','CTO-TASK','R-CTO')
         with self.assertRaises(sqlite3.IntegrityError):
             self.store.db.execute("UPDATE reports SET content='rewritten' WHERE id='R-CTO'")
+        self.w.begin_review(self.ceo,'R-CTO',1,'begin-review')
         self.w.review_report(self.ceo,'R-CTO',1,'REV','accepted','Checked','review')
         with self.assertRaises(sqlite3.IntegrityError):
             self.store.db.execute("DELETE FROM reviews WHERE id='REV'")
         self.assertEqual(self.store.db.execute("SELECT content FROM reports WHERE id='R-CTO'").fetchone()[0],
                          'Evidence backed: R-CTO')
 
+    def test_review_requires_exact_started_report_context(self):
+        self.delegate('CEO','CTO','ROOT','CTO-TASK')
+        self.evidence_report('CTO','CTO-TASK','R-CTO')
+        self.w.begin_review(self.ceo,'R-CTO',1,'begin-review')
+        self.denies('REFERENCE_REPORT_NOT_FOUND',lambda:self.w.review_report(
+            self.ceo,'R-CTO',2,'REV','accepted','wrong version','wrong-version'))
+        # A matching report exists, but only the explicitly selected one may be reviewed.
+        self.store.db.execute('''INSERT INTO reports VALUES (?,?,?,?,?,?,?)''',
+                              ('COMPANY-DEMO-001','R-OTHER',1,'CTO-TASK','APPOINT-CTO',
+                               'AGT-CTO','Other submitted report fixture'))
+        self.denies('AUTH_REVIEW_CONTEXT_MISMATCH',lambda:self.w.review_report(
+            self.ceo,'R-OTHER',1,'REV','accepted','wrong report','wrong-report'))
+        self.w.review_report(self.ceo,'R-CTO',1,'REV','accepted','Matched','matched-review')
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM review_contexts').fetchone()[0],0)
+
     def test_report_revision_after_changes_requested(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
         self.evidence_report('CTO','CTO-TASK','R-CTO')
+        self.w.begin_review(self.ceo,'R-CTO',1,'begin-review')
         self.w.review_report(self.ceo,'R-CTO',1,'REV1','changes_requested','Need more detail','rev1')
+        self.w.resume_task(self.actors['CTO'],'CTO-TASK',5,'resume-after-changes')
         self.evidence_report('CTO','CTO-TASK','R-CTO',version=2)
+        self.w.begin_review(self.ceo,'R-CTO',2,'begin-review-v2')
         self.w.review_report(self.ceo,'R-CTO',2,'REV2','accepted','Checked','rev2')
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM reports WHERE id=?',('R-CTO',)).fetchone()[0],2)
 
@@ -283,6 +329,7 @@ class WorkflowTests(unittest.TestCase):
     def test_reopen_db_preserves_report_review_and_evidence(self):
         self.delegate('CEO','CTO','ROOT','CTO-TASK')
         self.evidence_report('CTO','CTO-TASK','R-CTO')
+        self.w.begin_review(self.ceo,'R-CTO',1,'begin-review')
         self.w.review_report(self.ceo,'R-CTO',1,'REV','accepted','Checked','review')
         self.store.close()
         self.store=Store(self.path)
