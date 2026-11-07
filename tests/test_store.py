@@ -38,6 +38,11 @@ class ContractFoundationTests(unittest.TestCase):
         self.assertEqual(self.store.task(self.ceo,'TASK-1')['state'],'draft')
         self.assertEqual(len(self.store.events(self.ceo)), 6)
 
+    def test_empty_fixture_does_not_create_company(self):
+        self.denies('ORG_CEO_REQUIRED', lambda: self.store.bootstrap('COMPANY-EMPTY', []))
+        self.assertIsNone(self.store.db.execute(
+            'SELECT 1 FROM companies WHERE id=?', ('COMPANY-EMPTY',)).fetchone())
+
     def test_fixture_bootstrap_disabled_by_default(self):
         self.store.close()
         self.store = Store(self.path)
