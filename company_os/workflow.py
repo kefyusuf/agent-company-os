@@ -69,6 +69,15 @@ CREATE TABLE IF NOT EXISTS reviews (
   FOREIGN KEY(company_id,report_id,report_version) REFERENCES reports(company_id,id,version),
   FOREIGN KEY(company_id,reviewer_appointment_id) REFERENCES appointments(company_id,id)
 );
+CREATE TABLE IF NOT EXISTS review_contexts (
+  company_id TEXT NOT NULL REFERENCES companies(id), task_id TEXT NOT NULL,
+  report_id TEXT NOT NULL, report_version INTEGER NOT NULL,
+  reviewer_appointment_id TEXT NOT NULL,
+  PRIMARY KEY(company_id,task_id),
+  FOREIGN KEY(company_id,task_id) REFERENCES tasks(company_id,id),
+  FOREIGN KEY(company_id,report_id,report_version) REFERENCES reports(company_id,id,version),
+  FOREIGN KEY(company_id,reviewer_appointment_id) REFERENCES appointments(company_id,id)
+);
 CREATE TRIGGER IF NOT EXISTS immutable_report_update BEFORE UPDATE ON reports
 BEGIN SELECT RAISE(ABORT,'immutable_report'); END;
 CREATE TRIGGER IF NOT EXISTS immutable_report_delete BEFORE DELETE ON reports
@@ -161,6 +170,16 @@ class Workflows:
             return self._advance(actor,task,'in_progress','task.started')
         return self._command(actor,key,'StartTask',payload,act)
 
+    def resume_task(self, actor: Actor, task_id: str, expected_revision: int, key: str) -> dict:
+        payload={'task_id':task_id,'expected_revision':expected_revision}
+        def act():
+            task=self._task(actor,task_id)
+            self._require_revision(task,expected_revision)
+            if task['state']!='changes_requested':
+                raise DomainError('STATE_RESUME_NOT_ALLOWED')
+            return self._advance(actor,task,'in_progress','task.resumed')
+        return self._command(actor,key,'ResumeTask',payload,act)
+
     def offer_delegation(self, actor: Actor, parent_task_id: str, offer_id: str,
                          child_task_id: str, target_appointment_id: str,
                          objective: str, expected_revision: int, key: str) -> dict:
@@ -180,8 +199,6 @@ class Workflows:
             delegator=self._row('appointments',actor.company_id,actor.appointment_id)
             if target is None or target['manager_id'] != delegator['position_id']:
                 raise DomainError('AUTH_NOT_DIRECT_REPORT')
-            if target['agent_id']==actor.agent_id:
-                raise DomainError('CONFLICT_SAME_AGENT_IDENTITY')
             depth=0
             current=parent
             while current['parent_id'] is not None:
@@ -260,7 +277,7 @@ class Workflows:
         payload={'task':task_id,'id':evidence_id,'source':source_ref,'sha256':content_sha256}
         def act():
             task=self._task(actor,task_id)
-            if task['state'] not in ('in_progress','changes_requested'):
+            if task['state']!='in_progress':
                 raise DomainError('STATE_EVIDENCE_NOT_ALLOWED')
             if not evidence_id or not source_ref.strip() or re.fullmatch(r'[0-9a-f]{64}',content_sha256) is None:
                 raise DomainError('SCHEMA_INVALID_EVIDENCE')
@@ -284,7 +301,7 @@ class Workflows:
         def act():
             task=self._task(actor,task_id)
             self._require_revision(task,expected_revision)
-            if task['state'] not in ('in_progress','changes_requested'):
+            if task['state']!='in_progress':
                 raise DomainError('STATE_REPORT_NOT_ALLOWED')
             if not report_id or not content.strip() or not isinstance(version,int) or version<1:
                 raise DomainError('SCHEMA_INVALID_REPORT')
@@ -337,14 +354,10 @@ class Workflows:
             return {'id':report_id,'version':version,'task_id':task_id,'state':'submitted'}
         return self._command(actor,key,'SubmitReport',payload,act)
 
-    def review_report(self, actor: Actor, report_id: str, version: int,
-                      review_id: str, decision: str, reason: str, key: str) -> dict:
-        payload={'report':report_id,'version':version,'review':review_id,'decision':decision,'reason':reason}
+    def begin_review(self, actor: Actor, report_id: str, version: int, key: str) -> dict:
+        payload={'report':report_id,'version':version}
         def act():
-            if decision not in ('accepted','changes_requested') or not reason.strip() or not review_id:
-                raise DomainError('SCHEMA_INVALID_REVIEW')
-            report=self.s.db.execute('''SELECT * FROM reports
-                WHERE company_id=? AND id=? AND version=?''',
+            report=self.s.db.execute('''SELECT * FROM reports WHERE company_id=? AND id=? AND version=?''',
                 (actor.company_id,report_id,version)).fetchone()
             if report is None:
                 raise DomainError('REFERENCE_REPORT_NOT_FOUND')
@@ -358,12 +371,47 @@ class Workflows:
                 raise DomainError('AUTH_NOT_REPORT_REVIEWER')
             if report['author_agent_id']==actor.agent_id:
                 raise DomainError('CONFLICT_SAME_AGENT_IDENTITY')
+            self.s.db.execute('''INSERT INTO review_contexts VALUES(?,?,?,?,?)''',
+                              (actor.company_id,task['id'],report_id,version,actor.appointment_id))
+            return self._advance(actor,task,'under_review','task.review_started',
+                                 {'report':report_id,'version':version})
+        return self._command(actor,key,'BeginReview',payload,act)
+
+    def review_report(self, actor: Actor, report_id: str, version: int,
+                      review_id: str, decision: str, reason: str, key: str) -> dict:
+        payload={'report':report_id,'version':version,'review':review_id,'decision':decision,'reason':reason}
+        def act():
+            if decision not in ('accepted','changes_requested') or not reason.strip() or not review_id:
+                raise DomainError('SCHEMA_INVALID_REVIEW')
+            report=self.s.db.execute('''SELECT * FROM reports
+                WHERE company_id=? AND id=? AND version=?''',
+                (actor.company_id,report_id,version)).fetchone()
+            if report is None:
+                raise DomainError('REFERENCE_REPORT_NOT_FOUND')
+            task=self._task(actor,report['task_id'],owner=False)
+            if task['state']!='under_review':
+                raise DomainError('STATE_REVIEW_NOT_ALLOWED')
+            if task['parent_id'] is None:
+                raise DomainError('AUTH_OWNER_REVIEW_NOT_IMPLEMENTED')
+            parent=self._row('tasks',actor.company_id,task['parent_id'])
+            if parent is None or parent['accountable_appointment_id']!=actor.appointment_id:
+                raise DomainError('AUTH_NOT_REPORT_REVIEWER')
+            if report['author_agent_id']==actor.agent_id:
+                raise DomainError('CONFLICT_SAME_AGENT_IDENTITY')
+            context=self.s.db.execute('''SELECT * FROM review_contexts WHERE
+                company_id=? AND task_id=?''',(actor.company_id,task['id'])).fetchone()
+            if (context is None or context['report_id']!=report_id or
+                    context['report_version']!=version or
+                    context['reviewer_appointment_id']!=actor.appointment_id):
+                raise DomainError('AUTH_REVIEW_CONTEXT_MISMATCH')
             try:
                 self.s.db.execute('''INSERT INTO reviews VALUES(?,?,?,?,?,?,?,?)''',
                                   (actor.company_id,review_id,report_id,version,actor.appointment_id,
                                    actor.agent_id,decision,reason))
             except sqlite3.IntegrityError as e:
                 raise DomainError('SCHEMA_CONSTRAINT') from e
+            self.s.db.execute('DELETE FROM review_contexts WHERE company_id=? AND task_id=?',
+                              (actor.company_id,task['id']))
             new_state='under_review' if decision=='accepted' else 'changes_requested'
             self._advance(actor,task,new_state,'task.reviewed',{'decision':decision,'review_id':review_id})
             self.s.audit(actor.company_id,'review',review_id,'review.'+decision,
