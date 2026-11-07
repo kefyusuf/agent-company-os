@@ -1,0 +1,10 @@
+# Python / local-only execution state
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.db
+*.sqlite
+*.sqlite3
+.coverage
+.pytest_cache/
