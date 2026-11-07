@@ -98,20 +98,39 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self.fixture_bootstrap = fixture_bootstrap
+        self._savepoint_sequence = 0
 
     def close(self) -> None:
         self.db.close()
 
     @contextmanager
     def tx(self) -> Iterator[None]:
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            yield
-        except BaseException:
-            self.db.rollback()
-            raise
+        """Permit an outer gateway authorization transaction and inner domain commands.
+
+        SQLite savepoints preserve the outer authorization + mutation atomicity.
+        All callers share one local connection; this is not a distributed lock.
+        """
+        if self.db.in_transaction:
+            self._savepoint_sequence += 1
+            point = f'command_sp_{self._savepoint_sequence}'
+            self.db.execute(f'SAVEPOINT {point}')
+            try:
+                yield
+            except BaseException:
+                self.db.execute(f'ROLLBACK TO SAVEPOINT {point}')
+                self.db.execute(f'RELEASE SAVEPOINT {point}')
+                raise
+            else:
+                self.db.execute(f'RELEASE SAVEPOINT {point}')
         else:
-            self.db.commit()
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                yield
+            except BaseException:
+                self.db.rollback()
+                raise
+            else:
+                self.db.commit()
 
     def audit(self, company: str, kind: str, item: str, event: str, actor: str, payload: dict):
         self.db.execute('INSERT INTO audit_events(company_id,aggregate_type,aggregate_id,event_type,actor_ref,payload,occurred_at) VALUES (?,?,?,?,?,?,?)',
