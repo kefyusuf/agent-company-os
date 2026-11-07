@@ -178,9 +178,12 @@ class Store:
             # Cross-appointment work must go through the future Delegation contract.
             if accountable != actor.appointment_id or assigned not in (None, actor.appointment_id):
                 raise DomainError('AUTH_DELEGATION_REQUIRED')
-            if parent_id is not None and self.db.execute(
-                'SELECT 1 FROM tasks WHERE company_id=? AND id=?',(company,parent_id)).fetchone() is None:
-                raise DomainError('REFERENCE_PARENT_NOT_FOUND')
+            if parent_id is not None:
+                if self.db.execute('SELECT 1 FROM tasks WHERE company_id=? AND id=?',
+                                   (company,parent_id)).fetchone() is None:
+                    raise DomainError('REFERENCE_PARENT_NOT_FOUND')
+                # Child tasks are created only after a scoped Delegation is accepted.
+                raise DomainError('AUTH_DELEGATION_REQUIRED')
             try:
                 self.db.execute('INSERT INTO tasks(company_id,id,parent_id,accountable_appointment_id,assigned_appointment_id,objective) VALUES (?,?,?,?,?,?)',
                                 (company,task_id,parent_id,accountable,assigned,objective))
