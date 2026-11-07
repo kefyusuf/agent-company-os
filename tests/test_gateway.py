@@ -213,6 +213,27 @@ class CommandGatewayTests(unittest.TestCase):
             self.cmd('report.sources',{'report_id':'REP','version':1},
                      appointment='APT-BACK',key='read')))
 
+    def test_same_agent_can_select_two_appointments_without_privilege_union(self):
+        self.root()
+        # A small company may legitimately combine CEO and CTO under one identity.
+        with self.store.tx():
+            self.store.db.execute("UPDATE appointments SET agent_id='AGT-CEO' WHERE id='APT-CTO'")
+        self.gateway.execute(self.ceo, self.cmd('delegation.offer',
+            {'parent_task_id':'ROOT','offer_id':'DEL-COMBINED',
+             'child_task_id':'TASK-COMBINED','target_appointment_id':'APT-CTO',
+             'objective':'Scoped CTO work','expected_revision':4},key='combined-offer'))
+        self.gateway.execute(self.ceo, self.cmd('delegation.accept',
+            {'offer_id':'DEL-COMBINED','expected_revision':1},
+            appointment='APT-CTO',key='combined-accept'))
+        started=self.gateway.execute(self.ceo, self.cmd('task.start',
+            {'task_id':'TASK-COMBINED','expected_revision':1},
+            appointment='APT-CTO',key='combined-start'))
+        self.assertEqual(started['state'],'in_progress')
+        # The CEO appointment cannot impersonate the CTO appointment's task.
+        self.denies('AUTH_NOT_ACCOUNTABLE',lambda:self.gateway.execute(self.ceo,
+            self.cmd('task.resume',{'task_id':'TASK-COMBINED','expected_revision':2},
+                     appointment='APT-CEO',key='combined-wrong-role')))
+
     def test_review_not_independent_across_two_appointments(self):
         self.delegate()
         sha=hashlib.sha256(b'e').hexdigest()
