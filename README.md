@@ -8,6 +8,17 @@ An **industry-agnostic, provider-independent AI company operating system** built
 
 The canonical design baseline is **`ai-company-os.core@0.1.0-rc1`** (M4.3). Its examples and test scenarios are specifications, **not passing tests**.
 
+## Project history and status
+
+The initial M1–M4 design work was developed in conversation and is now **reconstructed and documented** in this repository. These are design records, not historical source-code commits or working implementations.
+
+- [Architecture index (M1–M4)](docs/architecture/README.md)
+- [Milestone ledger and PR merge order](docs/PROJECT_STATUS.md)
+- [M4.3 canonical contract candidate](docs/architecture/m4.3-contract-freeze.md)
+- [M4.4 minimum implementation slice](docs/implementation/m4.4-vertical-slice.md)
+
+**Important:** The contract and implementation work are currently in **stacked draft PRs #1 → #2 → #3**. The default `main` branch will not contain them until reviewed and merged. See [open PRs](https://github.com/kefyusuf/agent-company-os/pulls).
+
 ## Source of truth
 
 - `contracts/core-rc1.yaml` — machine-readable *candidate* contract manifest.
