@@ -1,68 +1,74 @@
 # Project Status & Repository Handoff
 
-**Snapshot:** 2026-11-08. Refresh this file when PRs merge or tests change.  
+**Verified snapshot:** 2026-11-08  
 **Repository:** https://github.com/kefyusuf/agent-company-os  
 **Default branch:** `main`  
-**Meaning of completion:** "Designed" ≠ "Implemented" ≠ "Tests Passed" ≠ "Merged".
+**Status vocabulary:** Designed ≠ Implemented ≠ Locally tested ≠ CI-verified ≠ Production-ready.
 
-## Why main currently looks empty
+## Repository synchronization
 
-The project started with architecture designed in conversation. On GitHub, a README was committed to `main`; the architecture and code were built on **three stacked draft PRs**, **not merged**. M1–M3 source narratives were not yet committed, even though their decisions informed M4.3.
+The project began with design sessions before this repository was created. M1–M4 historical decisions were **reconstructed and labeled as design records**; they are not verbatim original artifacts. The authoritative M4.3 contract candidate is version `0.1.0-rc1`.
 
-This recovery adds a clear decision inventory to **PR #1** while keeping `main` stable pending review.
+**All three foundational pull requests are now merged into `main`:**
+
+| PR | Merged scope | Final status |
+| --- | --- | --- |
+| [#1](https://github.com/kefyusuf/agent-company-os/pull/1) | M1–M4 architecture recovery, RC1 manifest, M4.4 plan | **Merged** |
+| [#2](https://github.com/kefyusuf/agent-company-os/pull/2) | M5.1 Python/SQLite persistence, tenant-scoped records, fixtures and tests | **Merged** |
+| [#3](https://github.com/kefyusuf/agent-company-os/pull/3) | M5.2 bounded task delegation, immutable reports, separate review decisions | **Merged** |
+
+The earlier claim that only a README is on `main` is **obsolete**. The file tree now includes `company_os/store.py`, `company_os/workflow.py`, `tests/`, `docs/` and `contracts/`.
 
 ## Milestone ledger
 
-| Milestone | Deliverable | Status |
+| Milestone | Scope | Evidence / actual state |
 | --- | --- | --- |
-| M1.1 | Company / organizational ontology | **Design reconstructed** |
-| M1.2 | Role / appointment / capability contracts | **Design reconstructed** |
-| M1.3 | Common + industry role catalog | **Reference roles reconstructed**, full ~47-role dataset absent |
-| M2.1 | Task, delegation, report and review | **Design**; M5.2 later tests a restricted subset |
-| M2.2 | Scoped memory, evidence and provenance | **Design**; basic evidence refs in M5.2, no validated memory service |
-| M2.3 | Authorization and human approval | **Design**; fixture checks only, no production policy engine |
-| M3.1 | Common/core + industry company blueprints | **Design**, no compiler |
-| M3.2 | Deterministic blueprint composition/validation | **Design**, no general compiler |
-| M3.3 | Provisioning/staffing/activation and handoff | **Design**, no production activation |
-| M4.1 | Cross-domain consistency / 20 invariants | **Design review** |
-| M4.2 | State/command/schema specification | **Design review**, not exhaustive executable schemas |
-| M4.3 | Contract freeze candidate `0.1.0-rc1` | **PR #1 — unmerged** |
-| M4.4 | Minimal vertical-slice specification | **PR #1 — unmerged** |
-| M5.1 | SQLite storage, strict task planning checks | **PR #2 — unmerged**; 16 reported local tests |
-| M5.2 | Bounded delegation, report/review | **PR #3 — unmerged**; 45 total reported local tests |
+| M1.1–M1.3 | Organization, roles, capabilities, company-level identity | **Design reconstructed**; not a complete role catalog artifact |
+| M2.1 | Task/delegation/report/review protocol | **Design**; restricted subset implemented in M5.2 |
+| M2.2 | Memory, evidence, provenance | **Design**; basic evidence refs only, no verified memory service |
+| M2.3 | Authorization, human approval, policy gates | **Design only** for full policy engine; fixture actor is caller asserted |
+| M3.1 | Core + industry blueprints | **Design** |
+| M3.2 | Blueprint compiler & validation | **Design**, compiler not implemented |
+| M3.3 | Provisioning, staffing, runtime binding and lifecycle | **Design**, real provisioning/activation not implemented |
+| M4.1–M4.3 | Consistency, contracts, 20 invariants | **RC1 candidate**; not full executable conformance |
+| M4.4 | Minimal vertical-slice plan | **Documented** |
+| M5.1 | SQLite data foundation and planning guards | **Merged**; 17 local tests including empty-fixture regression |
+| M5.2 | Delegation + report/review + evidence refs | **Merged**; 29 local tests |
+| M5.3 | Trusted command authorization boundary | **Next / contract in review**; no authenticated boundary implemented |
 
-### PR chain (do not confuse with main)
+## Verification evidence and limits
 
-| PR | Base branch | Contains | Merge dependency |
-| --- | --- | --- | --- |
-| [#1](https://github.com/kefyusuf/agent-company-os/pull/1) | `main` | RC1 manifest, M4.4 plan, reconstructed M1–M4 docs | First |
-| [#2](https://github.com/kefyusuf/agent-company-os/pull/2) | `docs/m4.4-bootstrap` | Python/SQLite foundation and tests | After #1 |
-| [#3](https://github.com/kefyusuf/agent-company-os/pull/3) | `feat/m5.1-persistence-foundation` | Delegation/reporting and tests | After #2 |
+```sh
+python -m unittest discover -s tests -q
+python -m compileall -q company_os tests
+```
 
-When merging a stacked PR: verify upstream merged, retarget the next PR to `main`, inspect the **new diff**, run applicable tests, then merge only when approved. Preserve historical PR evidence.
+Observed in the isolated local environment on **2026-11-08**: **46/46 unittest cases passed**, plus Python syntax compilation. This result covers the test fixtures and code reviewed in the merged PRs; **GitHub Actions has not run**. It is not full M4.3 invariant coverage or a production security claim.
 
-## What has **not** been proved
+The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
 
-- No verified, authenticated production actor boundary; current `Actor` is caller asserted.
-- No comprehensive company authorization engine / Approval fingerprint enforcement / budgets.
-- No live LLM or autonomous agent tool execution, production payments or deployments.
-- No real Company Blueprint compiler, activation readiness or staffing engine.
-- No full persistence recovery/lease/OperationAttempt reconciliation.
-- No full `20×2` invariant suite, `6` cross-domain flow suite or passing G1–G7 gates.
-- The reported **45 local tests** were obtained in earlier isolated validation, **not re-run or confirmed via GitHub CI by this documentation recovery**.
+**Still missing / NO-GO for autonomous deployment:**
 
-## Immediate next work
+- Authentication and genuine principal/appointment attestation; `Actor` is currently **caller supplied**.
+- Complete default-deny authorization, budgets, task/role/capability policies, human approval binding, and independent review policy.
+- Real Owner report review/approval, Company readiness and activation; fixture activation uses test-only direct SQLite state changes.
+- Memory verification, actual external evidence integrity/provenance and robust ACL/retention behavior.
+- Real LLM + tools integration, secure external OperationAttempt, leases/checkpoints and result reconciliation.
+- The full invariant matrix, all six end-to-end flows and G1–G7 release gates.
 
-1. Review reconstructed historical docs and mark discrepancies as explicit ADRs/edits (do **not** invent prior exact decisions).
-2. Review PR #1 and merge if approved; confirm documents appear on `main`.
-3. Refresh/retarget PR #2, verify tests and review/merge.
-4. Refresh/retarget PR #3, verify tests and review/merge.
-5. Proceed with M5.3: authenticated command boundary, concrete policy/acceptance guards, evidence provenance and Owner delivery semantics before connecting an LLM.
+## Current navigation
 
-## Suggested maintenance rule
+1. [Architecture index](architecture/README.md)
+2. [M4.3 contract freeze](architecture/m4.3-contract-freeze.md) and [manifest](../contracts/core-rc1.yaml)
+3. [M4.4 reference workflow](implementation/m4.4-vertical-slice.md)
+4. [M5.1 implementation notes](implementation/m5.1-foundation.md)
+5. [M5.2 delegation/report notes](implementation/m5.2-delegation-reporting.md)
+6. [M5.3 authorization gate design](implementation/m5.3-authorization-boundary.md)
 
-Every substantive future milestone should update the appropriate versioned contract/ADR, its runnable tests, this ledger, and PR evidence. Use **one canonical GitHub repository**; avoid off-repo-only design progression.
+## Rules for next contributions
 
-## Main reading path
-
-[Architecture index](architecture/README.md) → [M4.3 freeze](architecture/m4.3-contract-freeze.md) → [M4.4 slice](implementation/m4.4-vertical-slice.md) → pending PR diffs.
+- Do not add an internet-facing API or allow untrusted callers to construct/submit `Actor` and call `Store` / `Workflows` methods.
+- The new authorization boundary must protect **every public command** and recheck at the actual side-effect boundary.
+- Keep changes in one canonical repository with a testable PR; mark all unimplemented guarantees honestly.
+- No production payments, deployments, customer-data export, unbounded agent execution or self-granted authority.
+- Update this ledger and include exact observed test evidence whenever a milestone changes.

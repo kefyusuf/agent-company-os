@@ -4,7 +4,7 @@ An **industry-agnostic, provider-independent AI company operating system** built
 
 ## Current status
 
-**Architecture / contract candidate — not an implemented runtime.**
+**Fixture-tested persistence and workflow prototype — not a production or autonomous agent runtime.**
 
 The canonical design baseline is **`ai-company-os.core@0.1.0-rc1`** (M4.3). Its examples and test scenarios are specifications, **not passing tests**.
 
@@ -17,7 +17,7 @@ The initial M1–M4 design work was developed in conversation and is now **recon
 - [M4.3 canonical contract candidate](docs/architecture/m4.3-contract-freeze.md)
 - [M4.4 minimum implementation slice](docs/implementation/m4.4-vertical-slice.md)
 
-**Important:** The contract and implementation work are currently in **stacked draft PRs #1 → #2 → #3**. The default `main` branch will not contain them until reviewed and merged. See [open PRs](https://github.com/kefyusuf/agent-company-os/pulls).
+**PRs #1, #2 and #3 are merged into `main`.** The project remains a local deterministic fixture with incomplete authorization, agent runtime, human approval and evidence verification. See [project status](docs/PROJECT_STATUS.md) and [PR history](https://github.com/kefyusuf/agent-company-os/pulls?q=is%3Apr+is%3Amerged).
 
 ## Source of truth
 
@@ -25,7 +25,7 @@ The initial M1–M4 design work was developed in conversation and is now **recon
 - `docs/architecture/m4.3-contract-freeze.md` — architecture decisions, invariants, conformance matrix.
 - `docs/implementation/m4.4-vertical-slice.md` — first implementation slice and acceptance gates.
 
-Files listed here are introduced through a bootstrap PR; links become available once that PR is merged.
+The architecture and the M5.1/M5.2 fixture code are now merged into `main` (PRs #1–#3). For exact proof and omissions, see [project status](docs/PROJECT_STATUS.md).
 
 ## Intended first vertical slice
 
@@ -40,4 +40,6 @@ An agent's **identity and work history are durable**; individual model/tool exec
 3. Do not enable autonomous production deployments, payments, unrestricted customer-data access, or other high-impact external actions.
 4. Keep changes reviewable in focused pull requests. Include evidence of tests run and clearly report anything not tested.
 
-**Project stage:** M4.4 planning / repository bootstrap.
+**Project stage:** M5.2 deterministic workflow merged; M5.3 authorization boundary pending. The local suite reports 46 passing tests (2026-11-08), with no GitHub CI verification. The `Actor` type is caller asserted and must not be exposed to untrusted clients.
+
+[Next: M5.3 Authorization Boundary](docs/implementation/m5.3-authorization-boundary.md)
