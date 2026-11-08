@@ -102,3 +102,11 @@ python3 scripts/verify.py --output .local/verification.json
 **Current evidence:** The verification script itself passed an isolated **single-test smoke run** (one sample unittest + compilation + JSON output). This is **not** a full agent-company-os test run. Additional B2 replay/security regression cases are committed but not yet verified in one complete repository checkout. **Do not merge PR #9, close Issue #10 or claim passing production/conformance gates until real checkout evidence exists.**
 
 **2026-11-08 merge update:** PR #7 merged after independent exact Git blob verification and 49/49 policy unit tests. PR #9 was retargeted to `main`; a new guard blocks adopting legacy, un-attested domain receipts as policy-approved gateway commands, with a regression case. **This PR #9 patch and all of its B2 tests are still unverified as one checkout.**
+
+## 2026-11-08 integrity review
+
+PR #9 adds append-only SQLite UPDATE/DELETE restrictions for issued policy versions and successful gateway receipts, plus two new regression tests. A local SQLite 3.46.1 focused smoke test passed **five** immutable/revocation checks. A separate two-connection `BEGIN IMMEDIATE` smoke test passed **two** writer-serialization observations. **These are not full gateway tests.**
+
+The six actual `tests/test_*.py` GitHub files contain **193 declared test methods** (17 + 29 + 25 + 49 + 34 + 39). The offline `scripts/verify.py` now requires all six files, at least 193 declarations, and an exact discovered-count match; this prevents a partial one-test checkout from being marked successful. The full 193-case branch suite is **not yet run**, and the latest new regression tests are **unverified**.
+
+**PR #9 stays Draft. Issue #10 stays OPEN.** No M5.3-C or real external effects until this gate is verified.
