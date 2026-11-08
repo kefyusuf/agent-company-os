@@ -170,6 +170,16 @@ class PolicyGatewayTests(unittest.TestCase):
         self.assert_denied('AUTH_REPLAY_POLICY_CHANGED',
             lambda:self.gateway.execute(self.ceo,command))
 
+    def test_replay_rejects_in_place_policy_rule_change(self):
+        command=self.cmd(key='policy-rule-replay')
+        self.gateway.execute(self.ceo,command)
+        # Deliberately mutate a fixture rule without version increment. A
+        # historical reply must not bypass this change even if still eligible.
+        self.set_rule('task.create',role='core.ceo@1',
+                      task_required=False,states=[],capabilities=[])
+        self.assert_denied('AUTH_REPLAY_POLICY_CHANGED',
+            lambda:self.gateway.execute(self.ceo,command))
+
     def test_replay_rejects_task_accountability_change(self):
         self.create_root()
         self.enable_ready()
