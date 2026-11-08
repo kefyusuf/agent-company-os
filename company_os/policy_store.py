@@ -172,10 +172,12 @@ class SQLitePolicyResolver:
         if field is None:
             return None
         if field=='delegation_lookup':
-            item=self.store.db.execute('''SELECT parent_task_id FROM delegations
+            item=self.store.db.execute('''SELECT parent_task_id,revision FROM delegations
                 WHERE company_id=? AND id=?''',(company,payload['offer_id'])).fetchone()
             if item is None:
                 raise DomainError('REFERENCE_DELEGATION_NOT_FOUND')
+            if item['revision'] != payload['expected_revision']:
+                raise DomainError('STALE_REVISION')
             task_id=item['parent_task_id']
         elif field=='report_lookup':
             item=self.store.db.execute('''SELECT task_id FROM reports
@@ -190,7 +192,9 @@ class SQLitePolicyResolver:
                                    (company,task_id)).fetchone()
         if task is None:
             raise DomainError('REFERENCE_TASK_NOT_FOUND')
-        if 'expected_revision' in payload and task['revision'] != payload['expected_revision']:
+        # Offer acceptance carries a Delegation revision, not a parent Task revision.
+        if (action != 'delegation.accept' and 'expected_revision' in payload and
+            task['revision'] != payload['expected_revision']):
             raise DomainError('STALE_REVISION')
         return task
 
@@ -307,3 +311,10 @@ class SQLitePolicyResolver:
         # MUST NOT enable the actual command here.
         if rule.approval_required:
             raise DomainError('AUTH_APPROVAL_CONSUMPTION_NOT_IMPLEMENTED')
+        # This policy decision is part of the same SQLite transaction as the
+        # domain mutation. A downstream guard failure rolls it back; the gateway
+        # records the denial in a separate minimal audit event instead.
+        self.store.audit(actor.company_id,'authorization',action,'authorization.permitted',
+             f'agent:{actor.agent_id}@{actor.appointment_id}',
+             {'policy_version':book.version,'action':action,'resource_id':resource_id,
+              'task_id':task_id})
