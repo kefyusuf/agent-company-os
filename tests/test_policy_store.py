@@ -146,6 +146,32 @@ class SnapshotResolverTests(unittest.TestCase):
           self.r.enforce(self.actor,'report.review',
             {'report_id':'R','version':1,'review_id':'RV','decision':'accepted','reason':'x'})))
 
+    def setup_delegation_accept(self):
+        rule={**self.rule,'action':'delegation.accept',
+              'allowed_task_states':['in_progress']}
+        self.set_rule(rule)
+        self.s.db.execute('UPDATE tasks SET state=?,revision=? WHERE company_id=?',
+                          ('in_progress',4,'C'))
+        self.s.db.execute('''INSERT INTO delegations
+             (company_id,id,parent_task_id,offered_by_appointment_id,
+              target_appointment_id,child_task_id,objective,state,revision)
+              VALUES (?,?,?,?,?,?,?,?,?)''',
+              ('C','OFFER','T','APT','APT','CHILD','Safe fixture','offered',1))
+        self.s.db.execute('INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)',
+              ('C','GRANT-ACCEPT','APT','T','delegation.accept','task:T',None,0,1))
+
+    def test_offer_accept_compares_delegation_revision_not_parent_revision(self):
+        self.setup_delegation_accept()
+        with self.s.tx():
+            self.r.enforce(self.actor,'delegation.accept',
+                           {'offer_id':'OFFER','expected_revision':1})
+
+    def test_stale_offer_revision_denied_independent_of_parent_revision(self):
+        self.setup_delegation_accept()
+        self.rejected('STALE_REVISION',lambda:self.in_tx(lambda:
+           self.r.enforce(self.actor,'delegation.accept',
+                          {'offer_id':'OFFER','expected_revision':2})))
+
     def test_malformed_boolean_policy_rule_denied(self):
         rule={**self.rule,'approval_required':'false'}
         self.set_rule(rule)
