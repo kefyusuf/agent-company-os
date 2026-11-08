@@ -374,3 +374,51 @@ class SQLitePolicyResolver:
                                       if replay_receipt is not None else
                                       (task['state'] if task else None)),
                 'resource_id':resource_id}
+
+    @staticmethod
+    def _gateway_digest(actor: Actor, action: str, payload: dict) -> str:
+        return hashlib.sha256(canonical({
+            'company_id':actor.company_id,
+            'agent_id':actor.agent_id,
+            'appointment_id':actor.appointment_id,
+            'action':action,'payload':payload
+        }).encode('utf-8')).hexdigest()
+
+    def replay(self, actor: Actor, action: str, payload: dict,
+               key: str) -> dict | None:
+        """Return a previously committed response only after fresh authorization.
+
+        The record provides the historical task state for checking the original
+        action's preconditions; current actor, grant, policy and company checks
+        are still mandatory. A receipt is never an authorization credential.
+        """
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        receipt=self.store.db.execute('''SELECT * FROM policy_gateway_receipts
+            WHERE company_id=? AND idempotency_key=?''',
+            (actor.company_id,key)).fetchone()
+        if receipt is None:
+            return None
+        digest=self._gateway_digest(actor,action,payload)
+        if (receipt['request_digest']!=digest or receipt['action']!=action or
+            receipt['agent_id']!=actor.agent_id or
+            receipt['appointment_id']!=actor.appointment_id):
+            raise DomainError('IDEMPOTENCY_CONFLICT')
+        self.enforce(actor,action,payload,replay_receipt=receipt)
+        return json.loads(receipt['result_json'])
+
+    def save_gateway_receipt(self, actor: Actor, action: str, payload: dict,
+                             key: str, policy_info: dict, result: dict) -> None:
+        """Commit the successful command receipt in the domain transaction."""
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        self.store.db.execute('''INSERT INTO policy_gateway_receipts
+            (company_id,idempotency_key,agent_id,appointment_id,action,
+             request_digest,policy_version,task_id,original_task_state,
+             resource_id,result_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+            (actor.company_id,key,actor.agent_id,actor.appointment_id,action,
+             self._gateway_digest(actor,action,payload),
+             policy_info['policy_version'],policy_info['task_id'],
+             policy_info['original_task_state'],policy_info['resource_id'],
+             canonical(result)))
