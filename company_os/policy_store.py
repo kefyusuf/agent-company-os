@@ -267,14 +267,21 @@ class SQLitePolicyResolver:
         author_id=None
         delegated=frozenset()
         if rule.independent_reviewer_required:
-            if action=='report.review' or action=='report.begin_review':
-                row=self.store.db.execute('''SELECT r.author_agent_id FROM reports r
-                    WHERE r.company_id=? AND r.id=? AND r.version=?''',
-                    (actor.company_id,payload['report_id'],payload['version'])).fetchone()
-                author_id=row['author_agent_id'] if row else None
-            else:
-                # No verified contributor lineage for other independent review actions.
+            if action not in ('report.review','report.begin_review'):
                 raise DomainError('POLICY_REVIEW_LINEAGE_UNAVAILABLE')
+            row=self.store.db.execute('''SELECT r.author_agent_id FROM reports r
+                WHERE r.company_id=? AND r.id=? AND r.version=?''',
+                (actor.company_id,payload['report_id'],payload['version'])).fetchone()
+            author_id=row['author_agent_id'] if row else None
+            if not author_id:
+                raise DomainError('POLICY_REVIEW_LINEAGE_UNAVAILABLE')
+            if author_id == actor.agent_id:
+                raise DomainError('CONFLICT_INDEPENDENT_REVIEW')
+            # A different identity is insufficient evidence of independence:
+            # a controlled subagent or upstream delegation chain can still
+            # create the appearance of independent review. Fail closed until
+            # trusted contributor lineage is stored and verified.
+            raise DomainError('POLICY_REVIEW_LINEAGE_UNAVAILABLE')
         ctx=PolicyContext(company_id=actor.company_id,
             principal_company_id=actor.company_id,
             appointment_company_id=actor.company_id,
