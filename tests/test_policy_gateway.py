@@ -233,7 +233,7 @@ class PolicyGatewayTests(unittest.TestCase):
         self.assertEqual(self.gateway.execute(self.ceo,command),first)
         self.assertEqual(self.state(),('in_progress',4))
 
-    def test_delegation_accept_replay_preserves_one_child(self):
+    def _accepted_delegation(self):
         self.create_root()
         self.enable_ready()
         self.gateway.execute(self.ceo,self.cmd('task.transition',
@@ -255,10 +255,33 @@ class PolicyGatewayTests(unittest.TestCase):
         command=self.cmd('delegation.accept',{'offer_id':'O-1','expected_revision':1},
                          appointment='APT-CTO',key='accept-once')
         first=self.gateway.execute(self.cto,command)
+        return command,first
+
+    def test_delegation_accept_replay_preserves_one_child(self):
+        command,first=self._accepted_delegation()
         self.assertEqual(first['state'],'accepted')
         self.assertEqual(self.gateway.execute(self.cto,command),first)
         self.assertEqual(self.store.db.execute(
             "SELECT count(*) FROM tasks WHERE id='CHILD'").fetchone()[0],1)
+
+    def test_delegation_replay_denies_revoked_offer(self):
+        command,_=self._accepted_delegation()
+        self.store.db.execute("UPDATE delegations SET state='revoked' WHERE id='O-1'")
+        self.assert_denied('AUTH_REPLAY_DELEGATION_STALE',
+            lambda:self.gateway.execute(self.cto,command))
+
+    def test_delegation_replay_denies_hierarchy_change(self):
+        command,_=self._accepted_delegation()
+        self.store.db.execute("UPDATE positions SET manager_id=NULL WHERE id='POS-CTO'")
+        self.assert_denied('AUTH_REPLAY_HIERARCHY_CHANGED',
+            lambda:self.gateway.execute(self.cto,command))
+
+    def test_delegation_replay_denies_child_accountability_change(self):
+        command,_=self._accepted_delegation()
+        self.store.db.execute("""UPDATE tasks
+            SET accountable_appointment_id='APT-CEO' WHERE id='CHILD'""")
+        self.assert_denied('AUTH_REPLAY_DELEGATION_STALE',
+            lambda:self.gateway.execute(self.cto,command))
 
     def test_missing_active_policy_denies_root(self):
         self.store.db.execute('UPDATE company_policy_versions SET active=0')
