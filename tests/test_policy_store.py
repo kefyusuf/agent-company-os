@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import datetime,timedelta,timezone
 from company_os.store import Store,Actor,DomainError,canonical
 from company_os.policy_store import SQLitePolicyResolver
+from company_os.workflow import Workflows
 
 NOW=datetime.now(timezone.utc)
 
@@ -23,6 +24,7 @@ class SnapshotResolverTests(unittest.TestCase):
             d.execute('INSERT INTO agents VALUES (?,?,?)',(c,'AGT','permanent'))
             d.execute('INSERT INTO appointments VALUES (?,?,?,?,?)',(c,'APT','AGT','P','active'))
             d.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?)',(c,'T',None,'APT','APT','demo','assigned',1))
+        self.workflow=Workflows(self.s)
         self.r=SQLitePolicyResolver(self.s)
         self.actor=Actor('C','AGT','APT')
         self.action='task.start'
@@ -109,6 +111,40 @@ class SnapshotResolverTests(unittest.TestCase):
     def test_positive_cost_not_executable(self):
         self.set_rule(self.rule,cost=1)
         self.rejected('BUDGET_RESERVATION_NOT_IMPLEMENTED')
+
+    def test_same_identity_independent_review_denied(self):
+        rule={**self.rule,'action':'report.review',
+              'allowed_task_states':['under_review'],
+              'independent_reviewer_required':True}
+        self.set_rule(rule)
+        self.s.db.execute('UPDATE tasks SET state=? WHERE company_id=?',('under_review','C'))
+        self.s.db.execute('''INSERT INTO reports (company_id,id,version,task_id,
+             author_appointment_id,author_agent_id,content) VALUES (?,?,?,?,?,?,?)''',
+             ('C','R',1,'T','APT','AGT','Fixture author report'))
+        self.s.db.execute('INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)',
+           ('C','REV','APT','T','report.review','task:T',None,0,1))
+        self.rejected('CONFLICT_INDEPENDENT_REVIEW',lambda:self.in_tx(lambda:
+          self.r.enforce(self.actor,'report.review',
+            {'report_id':'R','version':1,'review_id':'RV','decision':'accepted','reason':'x'})))
+
+    def test_different_identity_not_proven_independent_without_lineage(self):
+        rule={**self.rule,'action':'report.review',
+              'allowed_task_states':['under_review'],
+              'independent_reviewer_required':True}
+        self.set_rule(rule)
+        self.s.db.execute('UPDATE tasks SET state=? WHERE company_id=?',('under_review','C'))
+        self.s.db.execute('INSERT INTO positions VALUES (?,?,?,?)',('C','P-OTHER','role.engineer@1',None))
+        self.s.db.execute('INSERT INTO agents VALUES (?,?,?)',('C','AGT-OTHER','permanent'))
+        self.s.db.execute('INSERT INTO appointments VALUES (?,?,?,?,?)',
+                         ('C','APT-OTHER','AGT-OTHER','P-OTHER','active'))
+        self.s.db.execute('''INSERT INTO reports (company_id,id,version,task_id,
+             author_appointment_id,author_agent_id,content) VALUES (?,?,?,?,?,?,?)''',
+             ('C','R',1,'T','APT-OTHER','AGT-OTHER','Independent author fixture'))
+        self.s.db.execute('INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)',
+           ('C','REV','APT','T','report.review','task:T',None,0,1))
+        self.rejected('POLICY_REVIEW_LINEAGE_UNAVAILABLE',lambda:self.in_tx(lambda:
+          self.r.enforce(self.actor,'report.review',
+            {'report_id':'R','version':1,'review_id':'RV','decision':'accepted','reason':'x'})))
 
     def test_malformed_boolean_policy_rule_denied(self):
         rule={**self.rule,'approval_required':'false'}
