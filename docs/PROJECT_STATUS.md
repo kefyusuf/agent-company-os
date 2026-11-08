@@ -88,3 +88,15 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 - Update this ledger and include exact observed test evidence whenever a milestone changes.
 
 **M5.3-B2 follow-up:** [Issue #10 — idempotent replay and live policy revocation](https://github.com/kefyusuf/agent-company-os/issues/10) has a **proposed source fix and additional regression tests** in PR #9; verification and closure are pending. The latest confirmed check was a **standalone SQLite receipt-schema smoke test**, not a full Python suite. PR #9 remains Draft until the complete checkout tests, replay/concurrency checks and review are completed.
+
+## Offline verification gate — current B2 branch
+
+`scripts/verify.py` now records test and syntax verification evidence without CI minutes:
+
+```sh
+git fetch origin
+git switch --detach origin/feat/m5.3-b2-sqlite-policy-gateway
+python3 scripts/verify.py --output .local/verification.json
+```
+
+**Current evidence:** The verification script itself passed an isolated **single-test smoke run** (one sample unittest + compilation + JSON output). This is **not** a full agent-company-os test run. Additional B2 replay/security regression cases are committed but not yet verified in one complete repository checkout. **Do not merge PR #9, close Issue #10 or claim passing production/conformance gates until real checkout evidence exists.**
