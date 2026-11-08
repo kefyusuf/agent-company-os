@@ -53,7 +53,7 @@ python -m compileall -q company_os tests
 Observed in the isolated local environment on **2026-11-08**:
 - **Merged M5.3-A baseline:** previously reported **71/71 local tests** (46 workflow + 25 gateway tests), before merge PR #6.
 - **M5.3-B1 isolated module:** 49/49 pure policy tests passed locally.
-- **M5.3-B2 local work directory:** 101/101 tests passed (49 B1 + 31 SQLite resolver + 21 gateway tests), but this used a lightweight Store/Workflows stand-in. **Full GitHub checkout tests, including the prior 71 baseline tests, have not been run together.**
+- **M5.3-B2 local work directory:** 101/101 tests passed (49 B1 + 31 SQLite resolver + 21 gateway tests), but this used a lightweight Store/Workflows stand-in. **Full GitHub checkout tests, including the prior 71 baseline tests, have not been run together.** **Two new policy-version regression tests were added after the observed 101-test run and have not been executed as part of the complete checkout.**
 - **GitHub Actions:** not run. These are fixture/pure-unit results, not full M4.3 conformance or production security.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
@@ -86,3 +86,5 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 - Keep changes in one canonical repository with a testable PR; run and record the full repository test suite on the combined B1/B2 branch before merge, and mark all unimplemented guarantees honestly.
 - No production payments, deployments, customer-data export, unbounded agent execution or self-granted authority.
 - Update this ledger and include exact observed test evidence whenever a milestone changes.
+
+**Open B2 blocker:** [Issue #10 — idempotent replay and live policy revocation](https://github.com/kefyusuf/agent-company-os/issues/10). PR #9 remains Draft until the issue and full repository conformance tests are addressed.
