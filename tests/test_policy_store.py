@@ -73,6 +73,28 @@ class SnapshotResolverTests(unittest.TestCase):
     def test_unknown_action(self):
         self.rejected('POLICY_UNKNOWN_ACTION',lambda:self.in_tx(lambda:self.r.enforce(self.actor,'unlisted',self.payload)))
 
+    def test_grant_does_not_carry_across_policy_version(self):
+        self.enforce()
+        self.s.db.execute("UPDATE company_policy_versions SET active=0 WHERE company_id='C'")
+        self.s.db.execute("INSERT INTO company_policy_versions VALUES (?,?,?)",('C','pol@2',1))
+        self.s.db.execute("INSERT INTO company_policy_rules VALUES (?,?,?,?,?)",
+            ('C','pol@2',self.action,json.dumps(self.rule),0))
+        # Same company, action, task and appointment; still no implicit re-grant.
+        self.rejected('AUTH_GRANT_SCOPE')
+        self.s.db.execute("INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)",
+            ('C','G-POL2','APT','T',self.action,'task:T',
+             (NOW+timedelta(hours=1)).isoformat(),0,1))
+        self.enforce()
+
+    def test_grant_issued_without_active_policy_never_becomes_valid(self):
+        self.s.db.execute("UPDATE company_policy_versions SET active=0 WHERE company_id='C'")
+        self.s.db.execute("INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)",
+            ('C','G-UNBOUND','APT','T',self.action,'task:T',
+             (NOW+timedelta(hours=1)).isoformat(),0,1))
+        self.s.db.execute("UPDATE policy_grants SET active=0 WHERE id='G' AND company_id='C'")
+        self.s.db.execute("UPDATE company_policy_versions SET active=1 WHERE company_id='C'")
+        self.rejected('AUTH_GRANT_SCOPE')
+
     def test_missing_grant(self):
         self.s.db.execute('UPDATE policy_grants SET active=0')
         self.rejected('AUTH_GRANT_SCOPE')
