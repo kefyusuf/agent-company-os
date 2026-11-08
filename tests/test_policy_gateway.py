@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from company_os import DomainError, Store
-from company_os.gateway import FixtureSessionHost, PolicyCommandGateway
+from company_os.gateway import CommandGateway, FixtureSessionHost, PolicyCommandGateway
 from company_os.policy_store import SQLitePolicyResolver
 from company_os.store import canonical
 
@@ -110,6 +110,20 @@ class PolicyGatewayTests(unittest.TestCase):
         self.assertEqual(self.state(),('draft',1))
         self.assertEqual(self.store.db.execute(
             "SELECT count(*) FROM policy_gateway_receipts WHERE idempotency_key='illegal'").fetchone()[0],0)
+
+    def test_legacy_receipt_cannot_be_adopted_by_policy_gateway(self):
+        # An older trusted fixture command may have succeeded without the
+        # new policy ledger. Its receipt is NOT policy authorization evidence.
+        command=self.cmd(key='legacy-created')
+        legacy=CommandGateway(self.store,self.host)
+        first=legacy.execute(self.ceo,command)
+        self.assertEqual(first['state'],'draft')
+        self.assert_denied('AUTH_UNATTESTED_LEGACY_RECEIPT',
+            lambda:self.gateway.execute(self.ceo,command))
+        self.assertEqual(self.state(),('draft',1))
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM policy_gateway_receipts WHERE idempotency_key='legacy-created'"
+        ).fetchone()[0],0)
 
     def test_create_idempotent(self):
         self.assertEqual(self.create_root(),self.create_root())
