@@ -51,7 +51,7 @@ python -m compileall -q company_os tests
 
 Observed in the isolated local environment on **2026-11-08**:
 - **Merged M5.3-A baseline:** previously reported **71/71 local tests** (46 workflow + 25 gateway tests), before merge PR #6.
-- **M5.3-B1 isolated module:** 49/49 pure policy tests passed locally.\n- **M5.3-B2 local work directory:** 97/97 tests passed (49 B1 + 29 SQLite resolver + 19 gateway tests), but this used a lightweight Store/Workflows stand-in. **Full GitHub checkout tests, including the prior 71 baseline tests, have not been run together.**
+- **M5.3-B1 isolated module:** 49/49 pure policy tests passed locally.\n- **M5.3-B2 local work directory:** 101/101 tests passed (49 B1 + 31 SQLite resolver + 21 gateway tests), but this used a lightweight Store/Workflows stand-in. **Full GitHub checkout tests, including the prior 71 baseline tests, have not been run together.**
 - **GitHub Actions:** not run. These are fixture/pure-unit results, not full M4.3 conformance or production security.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
