@@ -62,6 +62,21 @@ CREATE TABLE IF NOT EXISTS policy_grants (
 );
 CREATE INDEX IF NOT EXISTS idx_scoped_policy_grants
     ON policy_grants(company_id,appointment_id,task_id,action,resource_id,active);
+-- Grants are bound to the policy version active at issuance, not just action name.
+CREATE TABLE IF NOT EXISTS policy_grant_versions (
+    company_id TEXT NOT NULL, grant_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    PRIMARY KEY(company_id,grant_id),
+    FOREIGN KEY(company_id,grant_id) REFERENCES policy_grants(company_id,id),
+    FOREIGN KEY(company_id,policy_version) REFERENCES company_policy_versions(company_id,version)
+);
+CREATE TRIGGER IF NOT EXISTS grant_policy_version_on_insert
+AFTER INSERT ON policy_grants
+BEGIN
+    INSERT INTO policy_grant_versions(company_id,grant_id,policy_version)
+    SELECT NEW.company_id,NEW.id,version FROM company_policy_versions
+    WHERE company_id=NEW.company_id AND active=1;
+END;
 CREATE TABLE IF NOT EXISTS policy_budgets (
     company_id TEXT PRIMARY KEY REFERENCES companies(id),
     remaining_units INTEGER NOT NULL CHECK(remaining_units >= 0)
@@ -199,11 +214,13 @@ class SQLitePolicyResolver:
         return task
 
     def _grant(self, company: str, appointment: str, task_id: str | None,
-               action: str, resource_id: str) -> ScopeGrant | None:
-        rows=self.store.db.execute('''SELECT * FROM policy_grants
-           WHERE company_id=? AND appointment_id=? AND task_id IS ?
-             AND action=? AND resource_id=? AND active=1''',
-           (company,appointment,task_id,action,resource_id)).fetchall()
+               action: str, resource_id: str, policy_version: str) -> ScopeGrant | None:
+        rows=self.store.db.execute('''SELECT g.* FROM policy_grants g
+           JOIN policy_grant_versions gv ON gv.company_id=g.company_id
+               AND gv.grant_id=g.id AND gv.policy_version=?
+           WHERE g.company_id=? AND g.appointment_id=? AND g.task_id IS ?
+             AND g.action=? AND g.resource_id=? AND g.active=1''',
+           (policy_version,company,appointment,task_id,action,resource_id)).fetchall()
         if len(rows)>1:
             raise DomainError('POLICY_AMBIGUOUS_GRANT')
         if not rows:
@@ -299,7 +316,7 @@ class SQLitePolicyResolver:
             remaining_budget_units=budget['remaining_units'] if budget else 0,
             actor_agent_id=actor.agent_id,reviewed_author_agent_id=author_id,
             delegated_reviewer_agent_ids=delegated)
-        grant=self._grant(actor.company_id,actor.appointment_id,task_id,action,resource_id)
+        grant=self._grant(actor.company_id,actor.appointment_id,task_id,action,resource_id,book.version)
         approval=self._approval(actor.company_id,task_id,action,resource_id,
                                 intent,revision,book.version) if rule.approval_required else None
         outcome=PolicyEvaluator(book).evaluate(ctx,grant,approval)
