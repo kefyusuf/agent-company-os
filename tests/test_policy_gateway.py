@@ -88,6 +88,27 @@ class PolicyGatewayTests(unittest.TestCase):
         self.assertEqual(self.state(),('draft',1))
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM command_receipts').fetchone()[0],1)
 
+    def test_policy_version_audited_with_successful_command(self):
+        self.create_root()
+        rows=self.store.db.execute('''SELECT payload FROM audit_events
+            WHERE event_type=? AND aggregate_id=?''',
+            ('authorization.permitted','task.create')).fetchall()
+        self.assertEqual(len(rows),1)
+        self.assertEqual(json.loads(rows[0]['payload'])['policy_version'],self.version)
+
+    def test_downstream_rejection_rolls_back_policy_permit_event(self):
+        self.create_root()
+        self.set_rule('task.transition',states=['draft'])
+        self.grant('G-READY','APT-CEO','ROOT','task.transition','task:ROOT')
+        self.assert_denied('STATE_TRANSITION_NOT_IMPLEMENTED_OR_FORBIDDEN',
+            lambda:self.gateway.execute(self.ceo,self.cmd('task.transition',
+              {'task_id':'ROOT','target':'accepted','expected_revision':1},key='illegal')))
+        permits=self.store.db.execute('''SELECT count(*) FROM audit_events
+            WHERE event_type=? AND aggregate_id=?''',
+            ('authorization.permitted','task.transition')).fetchone()[0]
+        self.assertEqual(permits,0)
+        self.assertEqual(self.state(),('draft',1))
+
     def test_create_idempotent(self):
         self.assertEqual(self.create_root(),self.create_root())
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM tasks').fetchone()[0],1)
