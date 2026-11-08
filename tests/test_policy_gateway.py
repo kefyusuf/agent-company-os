@@ -108,6 +108,8 @@ class PolicyGatewayTests(unittest.TestCase):
             ('authorization.permitted','task.transition')).fetchone()[0]
         self.assertEqual(permits,0)
         self.assertEqual(self.state(),('draft',1))
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM policy_gateway_receipts WHERE idempotency_key='illegal'").fetchone()[0],0)
 
     def test_create_idempotent(self):
         self.assertEqual(self.create_root(),self.create_root())
@@ -184,6 +186,27 @@ class PolicyGatewayTests(unittest.TestCase):
         self.store.db.execute("UPDATE companies SET state='paused' WHERE id='C-A'")
         self.assert_denied('AUTH_COMPANY_NOT_ACTIVE',
             lambda:self.gateway.execute(self.ceo,command))
+
+    def test_replay_checks_current_grant_expiry(self):
+        command=self.cmd(key='expired-replay')
+        self.gateway.execute(self.ceo,command)
+        self.store.db.execute("UPDATE policy_grants SET expires_at=? WHERE id='G-ROOT'",
+            ((datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat(),))
+        self.assert_denied('AUTH_GRANT_EXPIRED',
+            lambda:self.gateway.execute(self.ceo,command))
+
+    def test_gateway_receipt_survives_database_restart(self):
+        command=self.cmd(key='reopen-replay')
+        first=self.gateway.execute(self.ceo,command)
+        self.store.close()
+        self.store=Store(Path(self.tmp.name)/'policy-gateway.db')
+        self.host=FixtureSessionHost()
+        self.ceo=self.host.issue('C-A','AGT-CEO')
+        self.cto=self.host.issue('C-A','AGT-CTO')
+        self.resolver=SQLitePolicyResolver(self.store)
+        self.gateway=PolicyCommandGateway(self.store,self.host,self.resolver)
+        self.assertEqual(self.gateway.execute(self.ceo,command),first)
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM tasks WHERE id='ROOT'").fetchone()[0],1)
 
     def test_start_task_replay_is_not_redispatched(self):
         self.create_root()
