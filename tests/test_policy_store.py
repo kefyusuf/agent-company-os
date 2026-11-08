@@ -1,6 +1,7 @@
 """Policy resolver tests against the repository Store and isolated SQLite state."""
 import hashlib
 import json
+import sqlite3
 import unittest
 import tempfile
 from pathlib import Path
@@ -94,6 +95,20 @@ class SnapshotResolverTests(unittest.TestCase):
         self.s.db.execute("UPDATE policy_grants SET active=0 WHERE id='G' AND company_id='C'")
         self.s.db.execute("UPDATE company_policy_versions SET active=1 WHERE company_id='C'")
         self.rejected('AUTH_GRANT_SCOPE')
+
+    def test_policy_grant_version_provenance_is_immutable(self):
+        self.assertEqual(self.s.db.execute(
+            "SELECT policy_version FROM policy_grant_versions WHERE company_id='C' AND grant_id='G'"
+        ).fetchone()['policy_version'],'pol@1')
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute(
+                "UPDATE policy_grant_versions SET policy_version=? WHERE company_id=? AND grant_id=?",
+                ('pol@1','C','G'))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute(
+                "DELETE FROM policy_grant_versions WHERE company_id=? AND grant_id=?",
+                ('C','G'))
+        self.enforce()
 
     def test_missing_grant(self):
         self.s.db.execute('UPDATE policy_grants SET active=0')
