@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS policy_gateway_receipts (
     policy_version TEXT NOT NULL,
     task_id TEXT,
     original_task_state TEXT,
+    original_accountability TEXT,
     resource_id TEXT NOT NULL,
     result_json TEXT NOT NULL,
     PRIMARY KEY(company_id,idempotency_key),
@@ -285,6 +286,8 @@ class SQLitePolicyResolver:
         if replay_receipt is not None and (
             replay_receipt['task_id'] != task_id or
             replay_receipt['resource_id'] != resource_id or
+            (task is not None and
+             replay_receipt['original_accountability'] != task['accountable_appointment_id']) or
             replay_receipt['agent_id'] != actor.agent_id or
             replay_receipt['appointment_id'] != actor.appointment_id or
             replay_receipt['action'] != action
@@ -373,7 +376,9 @@ class SQLitePolicyResolver:
                 'original_task_state':(replay_receipt['original_task_state']
                                       if replay_receipt is not None else
                                       (task['state'] if task else None)),
-                'resource_id':resource_id}
+                'resource_id':resource_id,
+                'original_accountability':(task['accountable_appointment_id']
+                                          if task is not None else None)}
 
     @staticmethod
     def _gateway_digest(actor: Actor, action: str, payload: dict) -> str:
@@ -415,10 +420,11 @@ class SQLitePolicyResolver:
         self.store.db.execute('''INSERT INTO policy_gateway_receipts
             (company_id,idempotency_key,agent_id,appointment_id,action,
              request_digest,policy_version,task_id,original_task_state,
-             resource_id,result_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+             original_accountability,resource_id,result_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
             (actor.company_id,key,actor.agent_id,actor.appointment_id,action,
              self._gateway_digest(actor,action,payload),
              policy_info['policy_version'],policy_info['task_id'],
-             policy_info['original_task_state'],policy_info['resource_id'],
+             policy_info['original_task_state'],
+             policy_info['original_accountability'],policy_info['resource_id'],
              canonical(result)))
