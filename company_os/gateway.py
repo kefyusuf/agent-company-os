@@ -171,9 +171,22 @@ class CommandGateway:
                     if role is None or role['role_ref'] != 'core.ceo@1':
                         raise DomainError('AUTH_ROOT_TASK_REQUIRES_CEO')
                 if self._policy_resolver is not None:
-                    # Host/appointment, live task, grants and policy must be read
-                    # under the SAME transaction as the domain mutation.
-                    self._policy_resolver.enforce(actor, action, p)
+                    # An exact replay is a historical result lookup, NOT a new
+                    # execution. Revalidate current identity, grants, policy
+                    # and resource scope before returning the committed result.
+                    cached = self._policy_resolver.replay(
+                        actor, action, p, command['key'])
+                    if cached is not None:
+                        return cached
+                    # For a first execution, check current Task/Delegation
+                    # revisions and permitted states. Receipt, business writes
+                    # and audit all commit in this same outer SQLite tx.
+                    policy_info = self._policy_resolver.enforce(actor, action, p)
+                    result = self._dispatch(action, actor, p, command['key'])
+                    if action != 'report.sources':
+                        self._policy_resolver.save_gateway_receipt(
+                            actor, action, p, command['key'], policy_info, result)
+                    return result
                 return self._dispatch(action, actor, p, command['key'])
         except DomainError as exc:
             # A denied attempt is auditable, but never leaks raw payload or secrets.
