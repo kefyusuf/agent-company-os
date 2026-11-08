@@ -39,7 +39,7 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.2 | Delegation + report/review + evidence refs | **Merged**; 29 local tests |
 | M5.3-A | Local fixture-only principal session + allowlisted command gateway | **PR #6 merged**; NOT a production authentication boundary |
 | M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Under review**; 49 isolated local tests, not gateway-integrated |
-| M5.3-B2 | Trusted state resolver and gateway policy binding | **Not implemented** |
+| M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **This stacked draft branch**: 48 new tests, full repo suite still pending |
 | M5.3-C | Real host authentication and one-time approvals | **Not implemented** |
 
 ## Verification evidence and limits
@@ -51,7 +51,7 @@ python -m compileall -q company_os tests
 
 Observed in the isolated local environment on **2026-11-08**:
 - **Merged M5.3-A baseline:** previously reported **71/71 local tests** (46 workflow + 25 gateway tests), before merge PR #6.
-- **M5.3-B1 isolated new module:** **49/49 policy tests** passed in the current local environment; the **combined repository test suite was not executed** for this branch.
+- **M5.3-B1 isolated module:** 49/49 pure policy tests passed locally.\n- **M5.3-B2 local work directory:** 97/97 tests passed (49 B1 + 29 SQLite resolver + 19 gateway tests), but this used a lightweight Store/Workflows stand-in. **Full GitHub checkout tests, including the prior 71 baseline tests, have not been run together.**
 - **GitHub Actions:** not run. These are fixture/pure-unit results, not full M4.3 conformance or production security.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
@@ -59,7 +59,7 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 **Still missing / NO-GO for autonomous deployment:**
 
 - Real authentication and principal/appointment attestation; direct Store/Workflows still accept **caller-supplied `Actor`**. M5.3-A gateway uses opaque **test sessions only**, not a production principal. M5.3-B1 pure policy values can also be forged without a trusted resolver.
-- Integrated default-deny authorization, atomic budget reservation, authoritative task/role/capability snapshots, human approval consumption, and complete independent review policy. M5.3-B1 provides **pure decisions only**, not enforcement.
+- Full authenticated default-deny authorization, atomic budget reservation, signed/verified principal context, one-time human approval consumption, and complete independent review provenance. M5.3-B2 adds **fixture-level SQLite enforcement** but does not meet production gates.
 - Real Owner report review/approval, Company readiness and activation; fixture activation uses test-only direct SQLite state changes.
 - Memory verification, actual external evidence integrity/provenance and robust ACL/retention behavior.
 - Real LLM + tools integration, secure external OperationAttempt, leases/checkpoints and result reconciliation.
@@ -74,12 +74,12 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 5. [M5.2 delegation/report notes](implementation/m5.2-delegation-reporting.md)
 6. [M5.3 authorization gate design](implementation/m5.3-authorization-boundary.md)
 7. [M5.3-A implementation scope and threats](implementation/m5.3-a-command-gateway.md) — merged PR #6
-8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — this PR, pending merge
+8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, pending merge\n9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — stacked draft, pending review
 
 ## Rules for next contributions
 
 - Do not add an internet-facing API or allow untrusted callers to construct/submit `Actor` and call `Store` / `Workflows` methods.
 - The local M5.3-A gateway implements a restricted allowlist; the **real** trusted host must protect every exposed command and recheck authorization at the actual side-effect boundary.
-- Keep changes in one canonical repository with a testable PR; mark all unimplemented guarantees honestly.
+- Keep changes in one canonical repository with a testable PR; run and record the full repository test suite on the combined B1/B2 branch before merge, and mark all unimplemented guarantees honestly.
 - No production payments, deployments, customer-data export, unbounded agent execution or self-granted authority.
 - Update this ledger and include exact observed test evidence whenever a milestone changes.
