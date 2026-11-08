@@ -81,6 +81,22 @@ CREATE TABLE IF NOT EXISTS policy_budgets (
     company_id TEXT PRIMARY KEY REFERENCES companies(id),
     remaining_units INTEGER NOT NULL CHECK(remaining_units >= 0)
 );
+CREATE TABLE IF NOT EXISTS policy_gateway_receipts (
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    idempotency_key TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    appointment_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    task_id TEXT,
+    original_task_state TEXT,
+    resource_id TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY(company_id,idempotency_key),
+    FOREIGN KEY(company_id,appointment_id) REFERENCES appointments(company_id,id),
+    FOREIGN KEY(company_id,task_id) REFERENCES tasks(company_id,id)
+);
 CREATE TABLE IF NOT EXISTS policy_approvals (
     company_id TEXT NOT NULL, id TEXT NOT NULL,
     task_id TEXT, action TEXT NOT NULL, resource_id TEXT NOT NULL,
@@ -180,7 +196,8 @@ class SQLitePolicyResolver:
             raise DomainError('POLICY_EMPTY_RULEBOOK')
         return PolicyBook(version,rules),costs
 
-    def _task_for_action(self, company: str, action: str, payload: dict):
+    def _task_for_action(self, company: str, action: str, payload: dict,
+                         *, replay: bool = False):
         field=TASK_FIELD.get(action,'UNSUPPORTED')
         if field=='UNSUPPORTED':
             raise DomainError('POLICY_UNKNOWN_ACTION')
@@ -191,7 +208,7 @@ class SQLitePolicyResolver:
                 WHERE company_id=? AND id=?''',(company,payload['offer_id'])).fetchone()
             if item is None:
                 raise DomainError('REFERENCE_DELEGATION_NOT_FOUND')
-            if item['revision'] != payload['expected_revision']:
+            if not replay and item['revision'] != payload['expected_revision']:
                 raise DomainError('STALE_REVISION')
             task_id=item['parent_task_id']
         elif field=='report_lookup':
@@ -208,7 +225,8 @@ class SQLitePolicyResolver:
         if task is None:
             raise DomainError('REFERENCE_TASK_NOT_FOUND')
         # Offer acceptance carries a Delegation revision, not a parent Task revision.
-        if (action != 'delegation.accept' and 'expected_revision' in payload and
+        if (not replay and action != 'delegation.accept' and
+            'expected_revision' in payload and
             task['revision'] != payload['expected_revision']):
             raise DomainError('STALE_REVISION')
         return task
@@ -248,7 +266,8 @@ class SQLitePolicyResolver:
           policy_version=a['policy_version'],expires_at=_timestamp(a['expires_at']),
           status=a['status'],approver_kind=a['approver_kind'],approver_id=a['approver_id'])
 
-    def enforce(self, actor: Actor, action: str, payload: dict) -> None:
+    def enforce(self, actor: Actor, action: str, payload: dict,
+                *, replay_receipt=None) -> dict:
         """Recheck policy before domain mutation; caller holds Store.tx write lock."""
         if not self.store.db.in_transaction:
             raise DomainError('POLICY_REQUIRES_TRANSACTION')
@@ -257,9 +276,20 @@ class SQLitePolicyResolver:
         rule=book.rules.get(action)
         if rule is None:
             raise DomainError('POLICY_UNKNOWN_ACTION')
-        task=self._task_for_action(actor.company_id,action,payload)
+        if replay_receipt is not None and book.version != replay_receipt['policy_version']:
+            raise DomainError('AUTH_REPLAY_POLICY_CHANGED')
+        task=self._task_for_action(actor.company_id,action,payload,
+                                   replay=replay_receipt is not None)
         task_id=task['id'] if task is not None else None
         resource_id='task:'+task_id if task_id else 'company:'+actor.company_id
+        if replay_receipt is not None and (
+            replay_receipt['task_id'] != task_id or
+            replay_receipt['resource_id'] != resource_id or
+            replay_receipt['agent_id'] != actor.agent_id or
+            replay_receipt['appointment_id'] != actor.appointment_id or
+            replay_receipt['action'] != action
+        ):
+            raise DomainError('AUTH_REPLAY_SCOPE_CHANGED')
         role=self.store.db.execute('''SELECT p.role_ref FROM appointments a
            JOIN positions p ON p.company_id=a.company_id AND p.id=a.position_id
            WHERE a.company_id=? AND a.id=?''',
@@ -309,7 +339,9 @@ class SQLitePolicyResolver:
             appointment_id=actor.appointment_id,appointment_active=True,
             role_ref=role['role_ref'],capabilities=caps,company_state=company['state'],
             task_id=task_id,task_company_id=actor.company_id if task_id else None,
-            task_state=task['state'] if task else None,
+            task_state=(replay_receipt['original_task_state']
+                        if replay_receipt is not None else
+                        (task['state'] if task else None)),
             resource_id=resource_id,resource_company_id=actor.company_id,
             action=action,payload_sha256=intent,target_revision=revision,
             requested_cost_units=cost,
@@ -331,7 +363,14 @@ class SQLitePolicyResolver:
         # This policy decision is part of the same SQLite transaction as the
         # domain mutation. A downstream guard failure rolls it back; the gateway
         # records the denial in a separate minimal audit event instead.
-        self.store.audit(actor.company_id,'authorization',action,'authorization.permitted',
+        self.store.audit(actor.company_id,'authorization',action,
+             'authorization.replay_permitted' if replay_receipt is not None
+             else 'authorization.permitted',
              f'agent:{actor.agent_id}@{actor.appointment_id}',
              {'policy_version':book.version,'action':action,'resource_id':resource_id,
               'task_id':task_id})
+        return {'policy_version':book.version,'task_id':task_id,
+                'original_task_state':(replay_receipt['original_task_state']
+                                      if replay_receipt is not None else
+                                      (task['state'] if task else None)),
+                'resource_id':resource_id}
