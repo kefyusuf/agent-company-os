@@ -9,7 +9,7 @@
 
 The project began with design sessions before this repository was created. M1–M4 historical decisions were **reconstructed and labeled as design records**; they are not verbatim original artifacts. The authoritative M4.3 contract candidate is version `0.1.0-rc1`.
 
-**Foundational PRs #1–#4 and M5.3-A PR #6 have merged into `main`. M5.3-B1 (#7) and M5.3-B2 (#9) remain under review:**
+**Foundational PRs #1–#4, M5.3-A PR #6 and M5.3-B1 PR #7 are merged into `main`. M5.3-B2 (#9) remains under review:**
 
 | PR | Merged scope | Final status |
 | --- | --- | --- |
@@ -18,8 +18,8 @@ The project began with design sessions before this repository was created. M1–
 | [#3](https://github.com/kefyusuf/agent-company-os/pull/3) | M5.2 bounded task delegation, immutable reports, separate review decisions | **Merged** |
 | [#4](https://github.com/kefyusuf/agent-company-os/pull/4) | Verified status and M5.3 safety planning | **Merged** |
 | [#6](https://github.com/kefyusuf/agent-company-os/pull/6) | M5.3-A fixture-only trusted command ingress | **Merged** |
-| [#7](https://github.com/kefyusuf/agent-company-os/pull/7) | M5.3-B1 pure policy decision evaluator | **Draft, pending review** |
-| [#9](https://github.com/kefyusuf/agent-company-os/pull/9) | M5.3-B2 SQLite policy gateway integration | **Draft, stacked on #7** |
+| [#7](https://github.com/kefyusuf/agent-company-os/pull/7) | M5.3-B1 pure policy decision evaluator | **Merged**, exact-source 49/49 local tests verified |
+| [#9](https://github.com/kefyusuf/agent-company-os/pull/9) | M5.3-B2 SQLite policy gateway integration | **Draft, now targeting main; unverified combined tests** |
 
 The earlier claim that only a README is on `main` is **obsolete**. The file tree now includes `company_os/store.py`, `company_os/workflow.py`, `tests/`, `docs/` and `contracts/`.
 
@@ -39,7 +39,7 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.1 | SQLite data foundation and planning guards | **Merged**; 17 local tests including empty-fixture regression |
 | M5.2 | Delegation + report/review + evidence refs | **Merged**; 29 local tests |
 | M5.3-A | Local fixture-only principal session + allowlisted command gateway | **PR #6 merged**; NOT a production authentication boundary |
-| M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Under review**; 49 isolated local tests, not gateway-integrated |
+| M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged**; 49 isolated exact-source tests passed, not gateway-integrated |
 | M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **PR #9 stacked on #7**: 52 new tests, full repo suite still pending |
 | M5.3-C | Real host authentication and one-time approvals | **Not implemented** |
 
@@ -52,7 +52,7 @@ python -m compileall -q company_os tests
 
 Observed in the isolated local environment on **2026-11-08**:
 - **Merged M5.3-A baseline:** previously reported **71/71 local tests** (46 workflow + 25 gateway tests), before merge PR #6.
-- **M5.3-B1 isolated module:** 49/49 pure policy tests passed locally.
+- **M5.3-B1 isolated module:** 49/49 pure policy tests passed independently on Python 3.13.5; Git blob SHA of both files matched PR #7 exactly before merge.
 - **M5.3-B2 local work directory:** 101/101 tests passed (49 B1 + 31 SQLite resolver + 21 gateway tests), but this used a lightweight Store/Workflows stand-in. **Full GitHub checkout tests, including the prior 71 baseline tests, have not been run together.** **Additional policy-version and idempotent-replay tests were added after the observed 101-test run and have not yet been executed as a full checkout.**
 - **GitHub Actions:** not run. These are fixture/pure-unit results, not full M4.3 conformance or production security.
 
@@ -76,7 +76,7 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 5. [M5.2 delegation/report notes](implementation/m5.2-delegation-reporting.md)
 6. [M5.3 authorization gate design](implementation/m5.3-authorization-boundary.md)
 7. [M5.3-A implementation scope and threats](implementation/m5.3-a-command-gateway.md) — merged PR #6
-8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, pending merge
+8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, merged
 9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — stacked draft, pending review
 
 ## Rules for next contributions
@@ -100,3 +100,5 @@ python3 scripts/verify.py --output .local/verification.json
 ```
 
 **Current evidence:** The verification script itself passed an isolated **single-test smoke run** (one sample unittest + compilation + JSON output). This is **not** a full agent-company-os test run. Additional B2 replay/security regression cases are committed but not yet verified in one complete repository checkout. **Do not merge PR #9, close Issue #10 or claim passing production/conformance gates until real checkout evidence exists.**
+
+**2026-11-08 merge update:** PR #7 merged after independent exact Git blob verification and 49/49 policy unit tests. PR #9 was retargeted to `main`; a new guard blocks adopting legacy, un-attested domain receipts as policy-approved gateway commands, with a regression case. **This PR #9 patch and all of its B2 tests are still unverified as one checkout.**
