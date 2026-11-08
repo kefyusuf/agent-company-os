@@ -296,6 +296,36 @@ class SQLitePolicyResolver:
                                    replay=replay_receipt is not None)
         task_id=task['id'] if task is not None else None
         resource_id='task:'+task_id if task_id else 'company:'+actor.company_id
+        if replay_receipt is not None and action == 'delegation.accept':
+            # The original offer revision may be stale (the accept succeeded),
+            # but the accepted delegation itself and its reporting chain must
+            # still be authoritative. A revoked offer is not an access token.
+            offer=self.store.db.execute('''SELECT * FROM delegations
+                WHERE company_id=? AND id=?''',
+                (actor.company_id,payload['offer_id'])).fetchone()
+            if (offer is None or offer['state']!='accepted' or
+                offer['target_appointment_id']!=actor.appointment_id or
+                offer['parent_task_id']!=task_id):
+                raise DomainError('AUTH_REPLAY_DELEGATION_STALE')
+            child=self.store.db.execute('''SELECT parent_id,accountable_appointment_id
+                FROM tasks WHERE company_id=? AND id=?''',
+                (actor.company_id,offer['child_task_id'])).fetchone()
+            if (child is None or child['parent_id']!=task_id or
+                child['accountable_appointment_id']!=actor.appointment_id):
+                raise DomainError('AUTH_REPLAY_DELEGATION_STALE')
+            relation=self.store.db.execute('''SELECT target_pos.manager_id,
+                delegator.position_id,delegator.status
+                FROM appointments target
+                JOIN positions target_pos ON target_pos.company_id=target.company_id
+                    AND target_pos.id=target.position_id
+                JOIN appointments delegator ON delegator.company_id=target.company_id
+                    AND delegator.id=?
+                WHERE target.company_id=? AND target.id=?''',
+                (offer['offered_by_appointment_id'],actor.company_id,
+                 actor.appointment_id)).fetchone()
+            if (relation is None or relation['status']!='active' or
+                relation['manager_id']!=relation['position_id']):
+                raise DomainError('AUTH_REPLAY_HIERARCHY_CHANGED')
         if replay_receipt is not None and (
             replay_receipt['task_id'] != task_id or
             replay_receipt['resource_id'] != resource_id or
