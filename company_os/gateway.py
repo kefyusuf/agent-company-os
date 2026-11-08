@@ -178,6 +178,15 @@ class CommandGateway:
                         actor, action, p, command['key'])
                     if cached is not None:
                         return cached
+                    # The old fixture gateway used only domain receipts, without
+                    # an authoritative policy snapshot. Never retroactively
+                    # adopt such a successful command as policy-authorized.
+                    legacy = self._store.db.execute(
+                        'SELECT 1 FROM command_receipts WHERE company_id=? AND key=?',
+                        (company, command['key'])
+                    ).fetchone()
+                    if legacy is not None:
+                        raise DomainError('AUTH_UNATTESTED_LEGACY_RECEIPT')
                     # For a first execution, check current Task/Delegation
                     # revisions and permitted states. Receipt, business writes
                     # and audit all commit in this same outer SQLite tx.
