@@ -5,6 +5,7 @@ Run against the complete GitHub branch to verify gateway integration.
 """
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -87,6 +88,23 @@ class PolicyGatewayTests(unittest.TestCase):
         self.assertEqual(result['state'],'draft')
         self.assertEqual(self.state(),('draft',1))
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM command_receipts').fetchone()[0],1)
+
+    def test_successful_gateway_receipt_is_append_only(self):
+        self.create_root()
+        before=self.store.db.execute('''SELECT result_json FROM policy_gateway_receipts
+            WHERE company_id=? AND idempotency_key=?''',('C-A','c1')).fetchone()
+        self.assertIsNotNone(before)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.db.execute('''UPDATE policy_gateway_receipts
+                SET result_json=? WHERE company_id=? AND idempotency_key=?''',
+                ('{"state":"forged"}','C-A','c1'))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.db.execute('''DELETE FROM policy_gateway_receipts
+                WHERE company_id=? AND idempotency_key=?''',('C-A','c1'))
+        after=self.store.db.execute('''SELECT result_json FROM policy_gateway_receipts
+            WHERE company_id=? AND idempotency_key=?''',('C-A','c1')).fetchone()
+        self.assertEqual(after['result_json'],before['result_json'])
+        self.assertEqual(self.create_root()['state'],'draft')
 
     def test_policy_version_audited_with_successful_command(self):
         self.create_root()
