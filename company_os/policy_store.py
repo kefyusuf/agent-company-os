@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS policy_gateway_receipts (
     action TEXT NOT NULL,
     request_digest TEXT NOT NULL,
     policy_version TEXT NOT NULL,
+    rule_digest TEXT NOT NULL,
     task_id TEXT,
     original_task_state TEXT,
     original_accountability TEXT,
@@ -277,7 +278,19 @@ class SQLitePolicyResolver:
         rule=book.rules.get(action)
         if rule is None:
             raise DomainError('POLICY_UNKNOWN_ACTION')
-        if replay_receipt is not None and book.version != replay_receipt['policy_version']:
+        rule_row=self.store.db.execute('''SELECT rule_json,fixed_cost_units FROM company_policy_rules
+            WHERE company_id=? AND version=? AND action=?''',
+            (actor.company_id,book.version,action)).fetchone()
+        if rule_row is None:
+            raise DomainError('POLICY_UNKNOWN_ACTION')
+        rule_digest=hashlib.sha256(canonical({
+            'rule_json':rule_row['rule_json'],
+            'fixed_cost_units':rule_row['fixed_cost_units']
+        }).encode('utf-8')).hexdigest()
+        if replay_receipt is not None and (
+            book.version != replay_receipt['policy_version'] or
+            rule_digest != replay_receipt['rule_digest']
+        ):
             raise DomainError('AUTH_REPLAY_POLICY_CHANGED')
         task=self._task_for_action(actor.company_id,action,payload,
                                    replay=replay_receipt is not None)
@@ -372,7 +385,7 @@ class SQLitePolicyResolver:
              f'agent:{actor.agent_id}@{actor.appointment_id}',
              {'policy_version':book.version,'action':action,'resource_id':resource_id,
               'task_id':task_id})
-        return {'policy_version':book.version,'task_id':task_id,
+        return {'policy_version':book.version,'rule_digest':rule_digest,'task_id':task_id,
                 'original_task_state':(replay_receipt['original_task_state']
                                       if replay_receipt is not None else
                                       (task['state'] if task else None)),
@@ -419,12 +432,12 @@ class SQLitePolicyResolver:
             raise DomainError('POLICY_REQUIRES_TRANSACTION')
         self.store.db.execute('''INSERT INTO policy_gateway_receipts
             (company_id,idempotency_key,agent_id,appointment_id,action,
-             request_digest,policy_version,task_id,original_task_state,
+             request_digest,policy_version,rule_digest,task_id,original_task_state,
              original_accountability,resource_id,result_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (actor.company_id,key,actor.agent_id,actor.appointment_id,action,
              self._gateway_digest(actor,action,payload),
-             policy_info['policy_version'],policy_info['task_id'],
-             policy_info['original_task_state'],
+             policy_info['policy_version'],policy_info['rule_digest'],
+             policy_info['task_id'],policy_info['original_task_state'],
              policy_info['original_accountability'],policy_info['resource_id'],
              canonical(result)))
