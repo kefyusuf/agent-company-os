@@ -113,6 +113,120 @@ class PolicyGatewayTests(unittest.TestCase):
         self.assertEqual(self.create_root(),self.create_root())
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM tasks').fetchone()[0],1)
 
+    def test_replayed_transition_returns_original_result(self):
+        self.create_root()
+        self.enable_ready()
+        cmd=self.cmd('task.transition',
+            {'task_id':'ROOT','target':'ready','expected_revision':1},key='ready-once')
+        first=self.gateway.execute(self.ceo,cmd)
+        self.assertEqual(first['revision'],2)
+        audit_before=self.store.db.execute('''SELECT count(*) FROM audit_events
+            WHERE event_type='task.ready' ''').fetchone()[0]
+        self.assertEqual(self.gateway.execute(self.ceo,cmd),first)
+        self.assertEqual(self.state(),('ready',2))
+        self.assertEqual(self.store.db.execute('''SELECT count(*) FROM audit_events
+            WHERE event_type='task.ready' ''').fetchone()[0],audit_before)
+        self.assertEqual(self.store.db.execute('''SELECT count(*) FROM
+            policy_gateway_receipts WHERE idempotency_key='ready-once' ''').fetchone()[0],1)
+
+    def test_changed_replay_payload_conflicts(self):
+        self.create_root()
+        self.enable_ready()
+        self.gateway.execute(self.ceo,self.cmd('task.transition',
+            {'task_id':'ROOT','target':'ready','expected_revision':1},key='mutate'))
+        self.assert_denied('IDEMPOTENCY_CONFLICT',lambda:self.gateway.execute(
+            self.ceo,self.cmd('task.transition',
+            {'task_id':'ROOT','target':'ready','expected_revision':2},key='mutate')))
+        self.assertEqual(self.state(),('ready',2))
+
+    def test_replay_rejects_revoked_grant(self):
+        self.create_root()
+        self.enable_ready()
+        command=self.cmd('task.transition',
+            {'task_id':'ROOT','target':'ready','expected_revision':1},key='revoke')
+        self.gateway.execute(self.ceo,command)
+        self.store.db.execute("UPDATE policy_grants SET active=0 WHERE id='G-READY'")
+        self.assert_denied('AUTH_GRANT_SCOPE',
+            lambda:self.gateway.execute(self.ceo,command))
+        self.assertEqual(self.state(),('ready',2))
+
+    def test_replay_rejects_ended_appointment(self):
+        command=self.cmd(key='replay-appointment')
+        self.gateway.execute(self.ceo,command)
+        self.store.db.execute("UPDATE appointments SET status='ended' WHERE id='APT-CEO'")
+        self.assert_denied('AUTH_INVALID_APPOINTMENT',
+            lambda:self.gateway.execute(self.ceo,command))
+
+    def test_replay_rejects_policy_version_rotation(self):
+        command=self.cmd(key='replay-version')
+        self.gateway.execute(self.ceo,command)
+        self.store.db.execute("UPDATE company_policy_versions SET active=0 WHERE company_id='C-A'")
+        self.store.db.execute("INSERT INTO company_policy_versions VALUES (?,?,?)",
+                              ('C-A','test-policy@2',1))
+        self.store.db.execute("INSERT INTO company_policy_rules SELECT company_id,?,action,rule_json,fixed_cost_units FROM company_policy_rules WHERE version=?",
+                              ('test-policy@2','test-policy@1'))
+        self.assert_denied('AUTH_REPLAY_POLICY_CHANGED',
+            lambda:self.gateway.execute(self.ceo,command))
+
+    def test_replay_rejects_task_accountability_change(self):
+        self.create_root()
+        self.enable_ready()
+        command=self.cmd('task.transition',
+            {'task_id':'ROOT','target':'ready','expected_revision':1},key='handoff')
+        self.gateway.execute(self.ceo,command)
+        self.store.db.execute("UPDATE tasks SET accountable_appointment_id='APT-CTO' WHERE id='ROOT'")
+        self.assert_denied('AUTH_REPLAY_SCOPE_CHANGED',
+            lambda:self.gateway.execute(self.ceo,command))
+
+    def test_replay_rejects_paused_company(self):
+        command=self.cmd(key='pause-replay')
+        self.gateway.execute(self.ceo,command)
+        self.store.db.execute("UPDATE companies SET state='paused' WHERE id='C-A'")
+        self.assert_denied('AUTH_COMPANY_NOT_ACTIVE',
+            lambda:self.gateway.execute(self.ceo,command))
+
+    def test_start_task_replay_is_not_redispatched(self):
+        self.create_root()
+        self.enable_ready()
+        self.gateway.execute(self.ceo,self.cmd('task.transition',
+            {'task_id':'ROOT','target':'ready','expected_revision':1},key='start-ready'))
+        self.gateway.execute(self.ceo,self.cmd('task.transition',
+            {'task_id':'ROOT','target':'assigned','expected_revision':2},key='start-assign'))
+        self.set_rule('task.start',states=['assigned'])
+        self.grant('G-START','APT-CEO','ROOT','task.start','task:ROOT')
+        command=self.cmd('task.start',{'task_id':'ROOT','expected_revision':3},key='start-once')
+        first=self.gateway.execute(self.ceo,command)
+        self.assertEqual(first['state'],'in_progress')
+        self.assertEqual(self.gateway.execute(self.ceo,command),first)
+        self.assertEqual(self.state(),('in_progress',4))
+
+    def test_delegation_accept_replay_preserves_one_child(self):
+        self.create_root()
+        self.enable_ready()
+        self.gateway.execute(self.ceo,self.cmd('task.transition',
+            {'task_id':'ROOT','target':'ready','expected_revision':1},key='delegate-ready'))
+        self.gateway.execute(self.ceo,self.cmd('task.transition',
+            {'task_id':'ROOT','target':'assigned','expected_revision':2},key='delegate-assigned'))
+        self.set_rule('task.start',states=['assigned'])
+        self.grant('G-START','APT-CEO','ROOT','task.start','task:ROOT')
+        self.gateway.execute(self.ceo,self.cmd('task.start',
+            {'task_id':'ROOT','expected_revision':3},key='delegate-start'))
+        self.set_rule('delegation.offer',states=['in_progress'])
+        self.grant('G-OFFER','APT-CEO','ROOT','delegation.offer','task:ROOT')
+        self.gateway.execute(self.ceo,self.cmd('delegation.offer',
+            {'parent_task_id':'ROOT','offer_id':'O-1','child_task_id':'CHILD',
+             'target_appointment_id':'APT-CTO','objective':'Analyze fixtures',
+             'expected_revision':4},key='offer-once'))
+        self.set_rule('delegation.accept',role='software.cto@1',states=['in_progress'])
+        self.grant('G-ACCEPT','APT-CTO','ROOT','delegation.accept','task:ROOT')
+        command=self.cmd('delegation.accept',{'offer_id':'O-1','expected_revision':1},
+                         appointment='APT-CTO',key='accept-once')
+        first=self.gateway.execute(self.cto,command)
+        self.assertEqual(first['state'],'accepted')
+        self.assertEqual(self.gateway.execute(self.cto,command),first)
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM tasks WHERE id='CHILD'").fetchone()[0],1)
+
     def test_missing_active_policy_denies_root(self):
         self.store.db.execute('UPDATE company_policy_versions SET active=0')
         self.assert_denied('POLICY_NO_ACTIVE_VERSION',self.create_root)
