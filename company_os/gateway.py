@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, TYPE_CHECKING
 from weakref import WeakKeyDictionary
 
 from .store import Actor, DomainError, Store
 from .workflow import Workflows
+
+if TYPE_CHECKING:
+    from .policy_store import SQLitePolicyResolver
 
 
 @dataclass(frozen=True)
@@ -90,10 +93,13 @@ class CommandGateway:
     state and enforces the existing command guards in the same transaction.
     """
 
-    def __init__(self, store: Store, host: FixtureSessionHost):
+    def __init__(self, store: Store, host: FixtureSessionHost, *,
+                 policy_resolver: SQLitePolicyResolver | None = None):
         self._store = store
         self._host = host
         self._workflow = Workflows(store)
+        # Without a resolver this remains the legacy, local-only M5.3-A fixture.
+        self._policy_resolver = policy_resolver
 
     @staticmethod
     def _validate(command: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -164,6 +170,10 @@ class CommandGateway:
                     ''', (company, actor.appointment_id)).fetchone()
                     if role is None or role['role_ref'] != 'core.ceo@1':
                         raise DomainError('AUTH_ROOT_TASK_REQUIRES_CEO')
+                if self._policy_resolver is not None:
+                    # Host/appointment, live task, grants and policy must be read
+                    # under the SAME transaction as the domain mutation.
+                    self._policy_resolver.enforce(actor, action, p)
                 return self._dispatch(action, actor, p, command['key'])
         except DomainError as exc:
             # A denied attempt is auditable, but never leaks raw payload or secrets.
@@ -213,3 +223,16 @@ class CommandGateway:
         if action == 'report.sources':
             return w.report_sources(actor, p['report_id'], p['version'])
         raise DomainError('AUTH_UNKNOWN_ACTION')
+
+class PolicyCommandGateway(CommandGateway):
+    """M5.3-B2: fixture commands MUST pass the SQLite policy gate.
+
+    This class still relies on the trusted TEST host; it is not a public API,
+    network authenticator, or permission to perform external side effects.
+    """
+
+    def __init__(self, store: Store, host: FixtureSessionHost,
+                 policy_resolver: SQLitePolicyResolver):
+        if policy_resolver is None or policy_resolver.store is not store:
+            raise ValueError('A policy resolver bound to the same Store is required')
+        super().__init__(store, host, policy_resolver=policy_resolver)
