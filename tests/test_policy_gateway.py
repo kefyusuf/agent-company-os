@@ -190,6 +190,17 @@ class PolicyGatewayTests(unittest.TestCase):
         self.assert_denied('AUTH_REPLAY_SCOPE_CHANGED',
             lambda:self.gateway.execute(self.ceo,command))
 
+    def test_replay_rejects_task_assignment_change(self):
+        self.create_root()
+        self.enable_ready()
+        command=self.cmd('task.transition',
+            {'task_id':'ROOT','target':'ready','expected_revision':1},key='assignment-change')
+        self.gateway.execute(self.ceo,command)
+        self.store.db.execute("""UPDATE tasks
+            SET assigned_appointment_id='APT-CTO' WHERE id='ROOT'""")
+        self.assert_denied('AUTH_REPLAY_SCOPE_CHANGED',
+            lambda:self.gateway.execute(self.ceo,command))
+
     def test_replay_rejects_paused_company(self):
         command=self.cmd(key='pause-replay')
         self.gateway.execute(self.ceo,command)
