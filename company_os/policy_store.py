@@ -77,6 +77,17 @@ BEGIN
     SELECT NEW.company_id,NEW.id,version FROM company_policy_versions
     WHERE company_id=NEW.company_id AND active=1;
 END;
+-- Issuance provenance may not be rewritten to reactivate an old grant.
+CREATE TRIGGER IF NOT EXISTS deny_grant_version_update
+BEFORE UPDATE ON policy_grant_versions
+BEGIN
+    SELECT RAISE(ABORT,'IMMUTABLE_GRANT_VERSION');
+END;
+CREATE TRIGGER IF NOT EXISTS deny_grant_version_delete
+BEFORE DELETE ON policy_grant_versions
+BEGIN
+    SELECT RAISE(ABORT,'IMMUTABLE_GRANT_VERSION');
+END;
 CREATE TABLE IF NOT EXISTS policy_budgets (
     company_id TEXT PRIMARY KEY REFERENCES companies(id),
     remaining_units INTEGER NOT NULL CHECK(remaining_units >= 0)
@@ -100,6 +111,17 @@ CREATE TABLE IF NOT EXISTS policy_gateway_receipts (
     FOREIGN KEY(company_id,appointment_id) REFERENCES appointments(company_id,id),
     FOREIGN KEY(company_id,task_id) REFERENCES tasks(company_id,id)
 );
+-- A successful command result and its authorization provenance are append-only.
+CREATE TRIGGER IF NOT EXISTS deny_gateway_receipt_update
+BEFORE UPDATE ON policy_gateway_receipts
+BEGIN
+    SELECT RAISE(ABORT,'IMMUTABLE_GATEWAY_RECEIPT');
+END;
+CREATE TRIGGER IF NOT EXISTS deny_gateway_receipt_delete
+BEFORE DELETE ON policy_gateway_receipts
+BEGIN
+    SELECT RAISE(ABORT,'IMMUTABLE_GATEWAY_RECEIPT');
+END;
 CREATE TABLE IF NOT EXISTS policy_approvals (
     company_id TEXT NOT NULL, id TEXT NOT NULL,
     task_id TEXT, action TEXT NOT NULL, resource_id TEXT NOT NULL,
