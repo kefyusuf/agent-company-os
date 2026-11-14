@@ -40,6 +40,6 @@ An agent's **identity and work history are durable**; individual model/tool exec
 3. Do not enable autonomous production deployments, payments, unrestricted customer-data access, or other high-impact external actions.
 4. Keep changes reviewable in focused pull requests. Include evidence of tests run and clearly report anything not tested.
 
-**Project stage:** M5.2 deterministic workflow merged; M5.3 authorization boundary pending. The local suite reports 46 passing tests (2026-11-08), with no GitHub CI verification. The `Actor` type is caller asserted and must not be exposed to untrusted clients.
+**Project stage:** M5.2 workflow, M5.3-A command gateway and M5.3-B1 policy evaluator are merged; M5.3-B2 gateway integration is under review as draft PR #9. The local suite reports 120 passing tests (2026-11-13), with no GitHub CI verification. The `Actor` type is caller asserted and must not be exposed to untrusted clients.
 
 [Next: M5.3 Authorization Boundary](docs/implementation/m5.3-authorization-boundary.md)

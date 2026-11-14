@@ -9,7 +9,7 @@
 
 The project began with design sessions before this repository was created. M1–M4 historical decisions were **reconstructed and labeled as design records**; they are not verbatim original artifacts. The authoritative M4.3 contract candidate is version `0.1.0-rc1`.
 
-**Foundational PRs #1–#4, M5.3-A PR #6 and M5.3-B1 PR #7 are merged into `main`. M5.3-B2 (#9) remains under review:**
+**Foundational PRs #1–#4, M5.3-A PR #6 and M5.3-B1 PR #7 have merged into `main`. M5.3-B2 remains under review as draft PR #9:**
 
 | PR | Merged scope | Final status |
 | --- | --- | --- |
@@ -18,8 +18,8 @@ The project began with design sessions before this repository was created. M1–
 | [#3](https://github.com/kefyusuf/agent-company-os/pull/3) | M5.2 bounded task delegation, immutable reports, separate review decisions | **Merged** |
 | [#4](https://github.com/kefyusuf/agent-company-os/pull/4) | Verified status and M5.3 safety planning | **Merged** |
 | [#6](https://github.com/kefyusuf/agent-company-os/pull/6) | M5.3-A fixture-only trusted command ingress | **Merged** |
-| [#7](https://github.com/kefyusuf/agent-company-os/pull/7) | M5.3-B1 pure policy decision evaluator | **Merged**, exact-source 49/49 local tests verified |
-| [#9](https://github.com/kefyusuf/agent-company-os/pull/9) | M5.3-B2 SQLite policy gateway integration | **Draft, now targeting main; unverified combined tests** |
+| [#7](https://github.com/kefyusuf/agent-company-os/pull/7) | M5.3-B1 pure policy decision evaluator | **Merged**; 49 exact-source local tests verified |
+| [#9](https://github.com/kefyusuf/agent-company-os/pull/9) | M5.3-B2 SQLite policy gateway integration | **Draft, under review** |
 
 The earlier claim that only a README is on `main` is **obsolete**. The file tree now includes `company_os/store.py`, `company_os/workflow.py`, `tests/`, `docs/` and `contracts/`.
 
@@ -39,8 +39,8 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.1 | SQLite data foundation and planning guards | **Merged**; 17 local tests including empty-fixture regression |
 | M5.2 | Delegation + report/review + evidence refs | **Merged**; 29 local tests |
 | M5.3-A | Local fixture-only principal session + allowlisted command gateway | **PR #6 merged**; NOT a production authentication boundary |
-| M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged**; 49 isolated exact-source tests passed, not gateway-integrated |
-| M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **PR #9 stacked on #7**: 52 new tests, full repo suite still pending |
+| M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged (PR #7)**; 49 exact-source local tests, not gateway-integrated |
+| M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **PR #9 under review**: 52 new tests on top of main |
 | M5.3-C | Real host authentication and one-time approvals | **Not implemented** |
 
 ## Verification evidence and limits
@@ -50,10 +50,11 @@ python -m unittest discover -s tests -q
 python -m compileall -q company_os tests
 ```
 
-Observed in the isolated local environment on **2026-11-08**:
+Observed in the local environment:
 - **Merged M5.3-A baseline:** previously reported **71/71 local tests** (46 workflow + 25 gateway tests), before merge PR #6.
-- **M5.3-B1 isolated module:** 49/49 pure policy tests passed independently on Python 3.13.5; Git blob SHA of both files matched PR #7 exactly before merge.
-- **M5.3-B2 local work directory:** 101/101 tests passed (49 B1 + 31 SQLite resolver + 21 gateway tests), but this used a lightweight Store/Workflows stand-in. **Full GitHub checkout tests, including the prior 71 baseline tests, have not been run together.** **Additional policy-version and idempotent-replay tests were added after the observed 101-test run and have not yet been executed as a full checkout.**
+- **M5.3-B1 isolated module (2026-11-08, pre-merge):** **49/49 pure policy tests** passed independently on Python 3.13.5; the Git blob SHA of both files matched PR #7 exactly before merge.
+- **M5.3-B2 local work directory (2026-11-08, pre-merge):** 101/101 tests passed (49 B1 + 31 SQLite resolver + 21 gateway tests), but this used a lightweight Store/Workflows stand-in and predates later replay/provenance test additions.
+- **Merged `main` checkout (2026-11-13):** **120/120 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean. Includes the M5.3-B1 module merged by PR #7.
 - **GitHub Actions:** not run. These are fixture/pure-unit results, not full M4.3 conformance or production security.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
