@@ -1,6 +1,6 @@
 # Project Status & Repository Handoff
 
-**Verified snapshot:** 2026-11-08  
+**Verified snapshot:** 2026-11-14  
 **Repository:** https://github.com/kefyusuf/agent-company-os  
 **Default branch:** `main`  
 **Status vocabulary:** Designed ≠ Implemented ≠ Locally tested ≠ CI-verified ≠ Production-ready.
@@ -9,7 +9,7 @@
 
 The project began with design sessions before this repository was created. M1–M4 historical decisions were **reconstructed and labeled as design records**; they are not verbatim original artifacts. The authoritative M4.3 contract candidate is version `0.1.0-rc1`.
 
-**Foundational PRs #1–#4, M5.3-A PR #6 and M5.3-B1 PR #7 have merged into `main`. M5.3-B2 remains under review as draft PR #9:**
+**Foundational PRs #1–#4, M5.3-A PR #6, M5.3-B1 PR #7 and M5.3-B2 PR #9 have merged into `main`:**
 
 | PR | Merged scope | Final status |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ The project began with design sessions before this repository was created. M1–
 | [#4](https://github.com/kefyusuf/agent-company-os/pull/4) | Verified status and M5.3 safety planning | **Merged** |
 | [#6](https://github.com/kefyusuf/agent-company-os/pull/6) | M5.3-A fixture-only trusted command ingress | **Merged** |
 | [#7](https://github.com/kefyusuf/agent-company-os/pull/7) | M5.3-B1 pure policy decision evaluator | **Merged**; 49 exact-source local tests verified |
-| [#9](https://github.com/kefyusuf/agent-company-os/pull/9) | M5.3-B2 SQLite policy gateway integration | **Draft, under review** |
+| [#9](https://github.com/kefyusuf/agent-company-os/pull/9) | M5.3-B2 SQLite policy gateway integration | **Merged**; 193/193 full-checkout tests verified (2026-11-14) |
 
 The earlier claim that only a README is on `main` is **obsolete**. The file tree now includes `company_os/store.py`, `company_os/workflow.py`, `tests/`, `docs/` and `contracts/`.
 
@@ -40,7 +40,7 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.2 | Delegation + report/review + evidence refs | **Merged**; 29 local tests |
 | M5.3-A | Local fixture-only principal session + allowlisted command gateway | **PR #6 merged**; NOT a production authentication boundary |
 | M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged (PR #7)**; 49 exact-source local tests, not gateway-integrated |
-| M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **PR #9 under review**: 52 new tests on top of main |
+| M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **Merged (PR #9)**; 52 new tests; full checkout verified 193/193 (2026-11-14) |
 | M5.3-C | Real host authentication and one-time approvals | **Not implemented** |
 
 ## Verification evidence and limits
@@ -79,7 +79,7 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 6. [M5.3 authorization gate design](implementation/m5.3-authorization-boundary.md)
 7. [M5.3-A implementation scope and threats](implementation/m5.3-a-command-gateway.md) — merged PR #6
 8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, merged
-9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — stacked draft, pending review
+9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — PR #9, merged
 
 ## Rules for next contributions
 
