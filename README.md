@@ -17,7 +17,7 @@ The initial M1–M4 design work was developed in conversation and is now **recon
 - [M4.3 canonical contract candidate](docs/architecture/m4.3-contract-freeze.md)
 - [M4.4 minimum implementation slice](docs/implementation/m4.4-vertical-slice.md)
 
-**PRs #1, #2 and #3 are merged into `main`.** The project remains a local deterministic fixture with incomplete authorization, agent runtime, human approval and evidence verification. See [project status](docs/PROJECT_STATUS.md) and [PR history](https://github.com/kefyusuf/agent-company-os/pulls?q=is%3Apr+is%3Amerged).
+**PRs #1–#4, #6, #7, #9, #11 and #12 are merged into `main`.** The project remains a local deterministic fixture with incomplete authorization, agent runtime, human approval and evidence verification. See [project status](docs/PROJECT_STATUS.md) and [PR history](https://github.com/kefyusuf/agent-company-os/pulls?q=is%3Apr+is%3Amerged).
 
 ## Source of truth
 
@@ -25,7 +25,7 @@ The initial M1–M4 design work was developed in conversation and is now **recon
 - `docs/architecture/m4.3-contract-freeze.md` — architecture decisions, invariants, conformance matrix.
 - `docs/implementation/m4.4-vertical-slice.md` — first implementation slice and acceptance gates.
 
-The architecture and the M5.1/M5.2 fixture code are now merged into `main` (PRs #1–#3). For exact proof and omissions, see [project status](docs/PROJECT_STATUS.md).
+The architecture and the M5.1/M5.2/M5.3-A/B1/B2 fixture code are now merged into `main` (PRs #1–#3, #6, #7, #9). For exact proof and omissions, see [project status](docs/PROJECT_STATUS.md).
 
 ## Intended first vertical slice
 
@@ -40,6 +40,6 @@ An agent's **identity and work history are durable**; individual model/tool exec
 3. Do not enable autonomous production deployments, payments, unrestricted customer-data access, or other high-impact external actions.
 4. Keep changes reviewable in focused pull requests. Include evidence of tests run and clearly report anything not tested.
 
-**Project stage:** M5.2 workflow, M5.3-A command gateway and M5.3-B1 policy evaluator are merged; M5.3-B2 gateway integration is under review as draft PR #9. The local suite reports 120 passing tests (2026-11-13), with no GitHub CI verification. The `Actor` type is caller asserted and must not be exposed to untrusted clients.
+**Project stage:** M5.2 workflow, M5.3-A command gateway, M5.3-B1 policy evaluator and M5.3-B2 SQLite policy gateway are merged. The local suite reports 193 passing tests (2026-11-14), with no GitHub CI verification. The `Actor` type is caller asserted and must not be exposed to untrusted clients.
 
-[Next: M5.3 Authorization Boundary](docs/implementation/m5.3-authorization-boundary.md)
+[Next: M5.3-C — real host authentication and one-time approvals (not implemented)](docs/implementation/m5.3-authorization-boundary.md)
