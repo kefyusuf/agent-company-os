@@ -55,6 +55,7 @@ Observed in the local environment:
 - **M5.3-B1 isolated module (2026-11-08, pre-merge):** **49/49 pure policy tests** passed independently on Python 3.13.5; the Git blob SHA of both files matched PR #7 exactly before merge.
 - **M5.3-B2 local work directory (2026-11-08, pre-merge):** 101/101 tests passed (49 B1 + 31 SQLite resolver + 21 gateway tests), but this used a lightweight Store/Workflows stand-in and predates later replay/provenance test additions.
 - **Merged `main` checkout (2026-11-13):** **120/120 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean. Includes the M5.3-B1 module merged by PR #7.
+- **M5.3-B2 full checkout (2026-11-14, PR head `2aa569a` + docs-PR #11 merge `80478f1`):** **193/193 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean; `scripts/verify.py` **PASS** (AST inventory 193/193, `all_passed: true`). Independent review found no P1/P2 findings; three P3 notes recorded on PR #9.
 - **GitHub Actions:** not run. These are fixture/pure-unit results, not full M4.3 conformance or production security.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
@@ -88,7 +89,7 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 - No production payments, deployments, customer-data export, unbounded agent execution or self-granted authority.
 - Update this ledger and include exact observed test evidence whenever a milestone changes.
 
-**M5.3-B2 follow-up:** [Issue #10 — idempotent replay and live policy revocation](https://github.com/kefyusuf/agent-company-os/issues/10) has a **proposed source fix and additional regression tests** in PR #9; verification and closure are pending. The latest confirmed check was a **standalone SQLite receipt-schema smoke test**, not a full Python suite. PR #9 remains Draft until the complete checkout tests, replay/concurrency checks and review are completed.
+**M5.3-B2 follow-up:** [Issue #10 — idempotent replay and live policy revocation](https://github.com/kefyusuf/agent-company-os/issues/10) has a **source fix and regression tests** in PR #9. The replay fix, the full checkout suite (**193/193**, 2026-11-14) and an independent code review are complete; production-authentication NO-GO statements are unchanged.
 
 ## Offline verification gate — current B2 branch
 
@@ -100,7 +101,7 @@ git switch --detach origin/feat/m5.3-b2-sqlite-policy-gateway
 python3 scripts/verify.py --output .local/verification.json
 ```
 
-**Current evidence:** The verification script itself passed an isolated **single-test smoke run** (one sample unittest + compilation + JSON output). This is **not** a full agent-company-os test run. Additional B2 replay/security regression cases are committed but not yet verified in one complete repository checkout. **Do not merge PR #9, close Issue #10 or claim passing production/conformance gates until real checkout evidence exists.**
+**Current evidence (2026-11-14):** A real full checkout at PR head `2aa569a` (plus the docs-PR #11 merge `80478f1`) passed **193/193 tests**, `compileall`, and `scripts/verify.py` with an exact 193/193 inventory match. **PR #9 merge and Issue #10 closure may proceed on this evidence; production/conformance claims are unchanged.**
 
 **2026-11-08 merge update:** PR #7 merged after independent exact Git blob verification and 49/49 policy unit tests. PR #9 was retargeted to `main`; a new guard blocks adopting legacy, un-attested domain receipts as policy-approved gateway commands, with a regression case. **This PR #9 patch and all of its B2 tests are still unverified as one checkout.**
 
@@ -108,6 +109,6 @@ python3 scripts/verify.py --output .local/verification.json
 
 PR #9 adds append-only SQLite UPDATE/DELETE restrictions for issued policy versions and successful gateway receipts, plus two new regression tests. A local SQLite 3.46.1 focused smoke test passed **five** immutable/revocation checks. A separate two-connection `BEGIN IMMEDIATE` smoke test passed **two** writer-serialization observations. **These are not full gateway tests.**
 
-The six actual `tests/test_*.py` GitHub files contain **193 declared test methods** (17 + 29 + 25 + 49 + 34 + 39). The offline `scripts/verify.py` now requires all six files, at least 193 declarations, and an exact discovered-count match; this prevents a partial one-test checkout from being marked successful. The full 193-case branch suite is **not yet run**, and the latest new regression tests are **unverified**.
+The six actual `tests/test_*.py` GitHub files contain **193 declared test methods** (17 + 29 + 25 + 49 + 34 + 39). The offline `scripts/verify.py` now requires all six files, at least 193 declarations, and an exact discovered-count match; this prevents a partial one-test checkout from being marked successful. The full 193-case branch suite was executed on 2026-11-14: **193/193 PASS**; the latest regression tests are verified in the same run.
 
-**PR #9 stays Draft. Issue #10 stays OPEN.** No M5.3-C or real external effects until this gate is verified.
+**PR #9 verification gate satisfied 2026-11-14 (193/193 + verifier PASS + independent review).** No M5.3-C or real external effects.
