@@ -107,10 +107,12 @@ CREATE TABLE IF NOT EXISTS policy_gateway_receipts (
     original_assignment TEXT,
     resource_id TEXT NOT NULL,
     reserved_cost_units INTEGER NOT NULL DEFAULT 0,
+    consumed_approval_id TEXT,
     result_json TEXT NOT NULL,
     PRIMARY KEY(company_id,idempotency_key),
     FOREIGN KEY(company_id,appointment_id) REFERENCES appointments(company_id,id),
-    FOREIGN KEY(company_id,task_id) REFERENCES tasks(company_id,id)
+    FOREIGN KEY(company_id,task_id) REFERENCES tasks(company_id,id),
+    FOREIGN KEY(company_id,consumed_approval_id) REFERENCES policy_approvals(company_id,id)
 );
 -- A successful command result and its authorization provenance are append-only.
 CREATE TRIGGER IF NOT EXISTS deny_gateway_receipt_update
@@ -131,9 +133,19 @@ CREATE TABLE IF NOT EXISTS policy_approvals (
     status TEXT NOT NULL CHECK(status IN
       ('pending','approved','denied','revoked','expired','consumed')),
     approver_kind TEXT NOT NULL, approver_id TEXT NOT NULL,
+    consumed_by_receipt TEXT,
     PRIMARY KEY(company_id,id),
     FOREIGN KEY(company_id,task_id) REFERENCES tasks(company_id,id)
 );
+-- A consumed approval is terminal: it can never be reset or re-attributed.
+CREATE TRIGGER IF NOT EXISTS immutable_approval_consumption
+BEFORE UPDATE ON policy_approvals
+BEGIN
+    SELECT RAISE(ABORT,'IMMUTABLE_APPROVAL_CONSUMPTION')
+    WHERE OLD.status='consumed'
+       OR (OLD.consumed_by_receipt IS NOT NULL
+           AND NEW.consumed_by_receipt IS NOT OLD.consumed_by_receipt);
+END;
 CREATE INDEX IF NOT EXISTS idx_policy_approval_intent
     ON policy_approvals(company_id,task_id,action,resource_id,payload_sha256,target_revision,policy_version);
 CREATE TABLE IF NOT EXISTS report_contributor_lineage (
@@ -298,7 +310,7 @@ class SQLitePolicyResolver:
 
     def _approval(self, company: str, task_id: str | None,
                   action: str, resource_id: str, payload_digest: str,
-                  target_revision: int, version: str) -> ApprovalSnapshot | None:
+                  target_revision: int, version: str) -> tuple[ApprovalSnapshot, str] | None:
         rows=self.store.db.execute('''SELECT * FROM policy_approvals
           WHERE company_id=? AND task_id IS ? AND action=? AND resource_id=?
             AND payload_sha256=? AND target_revision=? AND policy_version=?''',
@@ -308,11 +320,12 @@ class SQLitePolicyResolver:
         if not rows:
             return None
         a=rows[0]
-        return ApprovalSnapshot(company_id=a['company_id'],task_id=a['task_id'],
+        return (ApprovalSnapshot(company_id=a['company_id'],task_id=a['task_id'],
           action=a['action'],resource_id=a['resource_id'],
           payload_sha256=a['payload_sha256'],target_revision=a['target_revision'],
           policy_version=a['policy_version'],expires_at=_timestamp(a['expires_at']),
-          status=a['status'],approver_kind=a['approver_kind'],approver_id=a['approver_id'])
+          status=a['status'],approver_kind=a['approver_kind'],approver_id=a['approver_id']),
+          a['id'])
 
     def enforce(self, actor: Actor, action: str, payload: dict,
                 *, replay_receipt=None) -> dict:
@@ -452,6 +465,18 @@ class SQLitePolicyResolver:
                 # Explicit check only refines the error code; the pure
                 # evaluator below would deny the same condition anyway.
                 raise DomainError('CONFLICT_INDEPENDENT_REVIEW')
+        approval_replay=False
+        if replay_receipt is not None and rule.approval_required:
+            # Replay provenance: the receipt must reference the approval it
+            # consumed at the original committed execution; a consumed
+            # approval can never be re-attributed (immutable trigger).
+            consumed=self.store.db.execute('''SELECT status,consumed_by_receipt
+                FROM policy_approvals WHERE company_id=? AND id=?''',
+                (actor.company_id,replay_receipt['consumed_approval_id'])).fetchone()
+            if (consumed is None or consumed['status']!='consumed' or
+                consumed['consumed_by_receipt']!=replay_receipt['idempotency_key']):
+                raise DomainError('AUTH_REPLAY_APPROVAL_STALE')
+            approval_replay=True
         ctx=PolicyContext(company_id=actor.company_id,
             principal_company_id=actor.company_id,
             appointment_company_id=actor.company_id,
@@ -467,19 +492,20 @@ class SQLitePolicyResolver:
             requested_cost_units=(0 if replay_receipt is not None else cost),
             remaining_budget_units=budget['remaining_units'] if budget else 0,
             actor_agent_id=actor.agent_id,reviewed_author_agent_id=author_id,
-            delegated_reviewer_agent_ids=delegated)
+            delegated_reviewer_agent_ids=delegated,approval_replay=approval_replay)
         grant=self._grant(actor.company_id,actor.appointment_id,task_id,action,resource_id,book.version)
-        approval=self._approval(actor.company_id,task_id,action,resource_id,
-                                intent,revision,book.version) if rule.approval_required else None
+        approval_id=None
+        approval=None
+        if rule.approval_required and replay_receipt is None:
+            found=self._approval(actor.company_id,task_id,action,resource_id,
+                                 intent,revision,book.version)
+            if found is not None:
+                approval,approval_id=found
         outcome=PolicyEvaluator(book).evaluate(ctx,grant,approval)
         if outcome.decision is Decision.DENY:
             raise DomainError(outcome.reason)
         if outcome.decision is Decision.APPROVAL_REQUIRED:
             raise DomainError(outcome.reason)
-        # No single-use approval consumption yet. Even an approved fixture value
-        # MUST NOT enable the actual command here.
-        if rule.approval_required:
-            raise DomainError('AUTH_APPROVAL_CONSUMPTION_NOT_IMPLEMENTED')
         # This policy decision is part of the same SQLite transaction as the
         # domain mutation. A downstream guard failure rolls it back; the gateway
         # records the denial in a separate minimal audit event instead.
@@ -495,6 +521,7 @@ class SQLitePolicyResolver:
                                       (task['state'] if task else None)),
                 'resource_id':resource_id,
                 'reserved_cost_units':reserved_cost,
+                'approval_id':approval_id,
                 'original_accountability':(task['accountable_appointment_id']
                                           if task is not None else None),
                 'original_assignment':(task['assigned_appointment_id']
@@ -541,15 +568,16 @@ class SQLitePolicyResolver:
             (company_id,idempotency_key,agent_id,appointment_id,action,
              request_digest,policy_version,rule_digest,task_id,original_task_state,
              original_accountability,original_assignment,resource_id,
-             reserved_cost_units,result_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+             reserved_cost_units,consumed_approval_id,result_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (actor.company_id,key,actor.agent_id,actor.appointment_id,action,
              self._gateway_digest(actor,action,payload),
              policy_info['policy_version'],policy_info['rule_digest'],
              policy_info['task_id'],policy_info['original_task_state'],
              policy_info['original_accountability'],
              policy_info['original_assignment'],policy_info['resource_id'],
-             policy_info['reserved_cost_units'],canonical(result)))
+             policy_info['reserved_cost_units'],policy_info.get('approval_id'),
+             canonical(result)))
 
     def record_report_lineage(self, actor: Actor, report_id: str,
                               version: int) -> None:
@@ -592,3 +620,24 @@ class SQLitePolicyResolver:
                 VALUES (?,?,?,?,?,?,?)''',
                 (actor.company_id,report_id,version,agent_id,kind,
                  report['author_appointment_id'],recorded_at))
+
+    def consume_approval(self, actor: Actor, approval_id: str,
+                         receipt_key: str, action: str) -> None:
+        """Consume an exact-matched human approval for one command attempt.
+
+        Must run inside the same transaction as the command; a downstream
+        failure rolls the approval back to 'approved' (owner-approved FIX-07
+        interpretation). A consumed approval is terminal (immutable trigger).
+        """
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        cursor=self.store.db.execute('''UPDATE policy_approvals
+            SET status='consumed', consumed_by_receipt=?
+            WHERE company_id=? AND id=? AND status='approved'
+              AND approver_kind='human' AND approver_id IS NOT NULL''',
+            (receipt_key,actor.company_id,approval_id))
+        if cursor.rowcount!=1:
+            raise DomainError('AUTH_APPROVAL_ALREADY_CONSUMED')
+        self.store.audit(actor.company_id,'approval',approval_id,'approval.consumed',
+             f'agent:{actor.agent_id}@{actor.appointment_id}',
+             {'action':action,'receipt':receipt_key})

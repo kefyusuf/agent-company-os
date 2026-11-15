@@ -408,33 +408,72 @@ class PolicyGatewayTests(unittest.TestCase):
             self.cmd('task.transition',{'task_id':'ROOT','target':'ready','expected_revision':1},key='req-app')))
         self.assertEqual(self.state(),('draft',1))
 
-    def test_exact_approval_still_fails_closed_without_consumption(self):
+    def _exact_approval(self, key='exact-app', target='ready'):
         self.create_root()
         self.set_rule('task.transition',states=['draft'],approval=True,risk='L3')
         self.grant('G-READY','APT-CEO','ROOT','task.transition','task:ROOT')
-        payload={'task_id':'ROOT','target':'ready','expected_revision':1}
+        payload={'task_id':'ROOT','target':target,'expected_revision':1}
         digest='sha256:'+hashlib.sha256(canonical({
             'company_id':'C-A','action':'task.transition','task_id':'ROOT',
             'resource':'task:ROOT','payload':payload}).encode()).hexdigest()
-        self.store.db.execute('INSERT INTO policy_approvals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        self.store.db.execute('''INSERT INTO policy_approvals (company_id,id,task_id,
+            action,resource_id,payload_sha256,target_revision,policy_version,
+            expires_at,status,approver_kind,approver_id,consumed_by_receipt)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             ('C-A','APP','ROOT','task.transition','task:ROOT',digest,1,self.version,
              (datetime.now(timezone.utc)+timedelta(hours=1)).isoformat(),
-             'approved','human','OWNER'))
-        self.assert_denied('AUTH_APPROVAL_CONSUMPTION_NOT_IMPLEMENTED',lambda:
-            self.gateway.execute(self.ceo,self.cmd('task.transition',payload,key='exact-app')))
-        self.assertEqual(self.state(),('draft',1))
+             'approved','human','OWNER',None))
+        return payload
 
-    def test_modified_approval_fingerprint_not_valid(self):
-        self.create_root()
-        self.set_rule('task.transition',states=['draft'],approval=True,risk='L3')
-        self.grant('G-READY','APT-CEO','ROOT','task.transition','task:ROOT')
-        self.store.db.execute('INSERT INTO policy_approvals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            ('C-A','APP','ROOT','task.transition','task:ROOT','sha256:'+'0'*64,1,self.version,
-             (datetime.now(timezone.utc)+timedelta(hours=1)).isoformat(),
-             'approved','human','OWNER'))
-        self.assert_denied('AUTH_EXACT_APPROVAL_REQUIRED',lambda:self.gateway.execute(self.ceo,
-            self.cmd('task.transition',{'task_id':'ROOT','target':'ready','expected_revision':1},key='bad-app')))
+    def test_exact_approval_executes_and_consumes(self):
+        payload=self._exact_approval()
+        result=self.gateway.execute(self.ceo,self.cmd('task.transition',payload,key='exact-app'))
+        self.assertEqual(result['state'],'ready')
+        self.assertEqual(self.state(),('ready',2))
+        row=self.store.db.execute('''SELECT status,consumed_by_receipt FROM policy_approvals
+            WHERE company_id=? AND id=?''',('C-A','APP')).fetchone()
+        self.assertEqual((row['status'],row['consumed_by_receipt']),('consumed','exact-app'))
+        consumed=self.store.db.execute('''SELECT count(*) FROM audit_events
+            WHERE event_type='approval.consumed' ''').fetchone()[0]
+        self.assertEqual(consumed,1)
+
+    def test_approval_gated_command_replays_without_reconsumption(self):
+        payload=self._exact_approval()
+        command=self.cmd('task.transition',payload,key='exact-app')
+        first=self.gateway.execute(self.ceo,command)
+        self.assertEqual(first['state'],'ready')
+        self.assertEqual(self.gateway.execute(self.ceo,command),first)
+        receipts=self.store.db.execute('''SELECT count(*) FROM policy_gateway_receipts
+            WHERE company_id=? AND idempotency_key=?''',('C-A','exact-app')).fetchone()[0]
+        self.assertEqual(receipts,1)
+        consumed_audit=self.store.db.execute('''SELECT count(*) FROM audit_events
+            WHERE event_type='approval.consumed' ''').fetchone()[0]
+        self.assertEqual(consumed_audit,1)
+
+    def test_consumed_approval_cannot_authorize_new_key(self):
+        payload=self._exact_approval()
+        self.gateway.execute(self.ceo,self.cmd('task.transition',payload,key='first-use'))
+        # Same payload under a new key: the revision precondition denies first.
+        self.assert_denied('STALE_REVISION',lambda:self.gateway.execute(
+            self.ceo,self.cmd('task.transition',payload,key='second-use')))
+        # A fresh payload under a new key cannot reuse the consumed fingerprint;
+        # this transition is domain-valid and is blocked by approval state only.
+        self.set_rule('task.transition',states=['draft','ready'],approval=True,risk='L3')
+        shifted={'task_id':'ROOT','target':'assigned','expected_revision':2}
+        self.assert_denied('AUTH_EXACT_APPROVAL_REQUIRED',lambda:self.gateway.execute(
+            self.ceo,self.cmd('task.transition',shifted,key='third-use')))
+        self.assertEqual(self.state(),('ready',2))
+
+    def test_approval_rolls_back_to_approved_on_domain_failure(self):
+        payload=self._exact_approval(target='accepted')
+        self.assert_denied('STATE_TRANSITION_NOT_IMPLEMENTED_OR_FORBIDDEN',lambda:
+            self.gateway.execute(self.ceo,self.cmd('task.transition',payload,key='doomed')))
+        row=self.store.db.execute('''SELECT status,consumed_by_receipt FROM policy_approvals
+            WHERE company_id=? AND id=?''',('C-A','APP')).fetchone()
+        self.assertEqual((row['status'],row['consumed_by_receipt']),('approved',None))
         self.assertEqual(self.state(),('draft',1))
+        self.assertEqual(self.store.db.execute('''SELECT count(*) FROM policy_gateway_receipts
+            WHERE company_id=? AND idempotency_key=?''',('C-A','doomed')).fetchone()[0],0)
 
     def test_revoked_appointment_rejected_on_each_command(self):
         self.store.db.execute('UPDATE appointments SET status=? WHERE company_id=? AND id=?',
@@ -532,5 +571,6 @@ class PolicyGatewayTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.store.db.execute('''DELETE FROM report_contributor_lineage
                 WHERE company_id=? AND report_id=?''',('C-A','R-CHILD'))
+
 
 if __name__=='__main__': unittest.main()

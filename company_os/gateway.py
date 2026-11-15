@@ -191,6 +191,12 @@ class CommandGateway:
                     # revisions and permitted states. Receipt, business writes
                     # and audit all commit in this same outer SQLite tx.
                     policy_info = self._policy_resolver.enforce(actor, action, p)
+                    approval_id = policy_info.get('approval_id')
+                    if approval_id is not None:
+                        # One-time consumption binds this approval to this
+                        # command attempt, atomically with the mutation.
+                        self._policy_resolver.consume_approval(
+                            actor, approval_id, command['key'], action)
                     result = self._dispatch(action, actor, p, command['key'])
                     if action == 'report.submit':
                         # Host-attested contributor lineage, recorded from
