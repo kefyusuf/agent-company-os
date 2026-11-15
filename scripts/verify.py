@@ -31,7 +31,7 @@ REQUIRED_TEST_FILES = (
     "tests/test_policy_store.py",
     "tests/test_policy_gateway.py",
 )
-MIN_ACCEPTED_TESTS = 206
+MIN_ACCEPTED_TESTS = 209
 
 
 def inventory() -> tuple[int, list[str]]:

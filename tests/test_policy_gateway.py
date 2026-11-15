@@ -12,7 +12,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from company_os import DomainError, Store
-from company_os.gateway import CommandGateway, FixtureSessionHost, PolicyCommandGateway
+from company_os.gateway import (CommandGateway, FixtureSessionHost, PolicyCommandGateway,
+                                TrustedPrincipalHost)
 from company_os.policy_store import SQLitePolicyResolver
 from company_os.store import canonical
 
@@ -572,5 +573,43 @@ class PolicyGatewayTests(unittest.TestCase):
             self.store.db.execute('''DELETE FROM report_contributor_lineage
                 WHERE company_id=? AND report_id=?''',('C-A','R-CHILD'))
 
+
+    def _trusted_host(self):
+        host=TrustedPrincipalHost()
+        host.provision('PRINCIPAL-CEO','C-A','AGT-CEO','ceo-pass-123')
+        host.provision('PRINCIPAL-CTO','C-A','AGT-CTO','cto-pass-456')
+        return host
+
+    def test_trusted_host_requires_verified_credential(self):
+        host=self._trusted_host()
+        with self.assertRaises(DomainError) as caught:
+            host.issue('PRINCIPAL-CEO','wrong-password')
+        self.assertEqual(caught.exception.code,'AUTH_BAD_CREDENTIAL')
+        with self.assertRaises(DomainError) as caught:
+            host.issue('unprovisioned','whatever')
+        self.assertEqual(caught.exception.code,'AUTH_BAD_CREDENTIAL')
+        session=host.issue('PRINCIPAL-CEO','ceo-pass-123')
+        gateway=PolicyCommandGateway(self.store,host,self.resolver)
+        result=gateway.execute(session,self.cmd(key='trusted-ok'))
+        self.assertEqual(result['state'],'draft')
+        self.assert_denied('AUTH_UNTRUSTED_SESSION',lambda:gateway.execute(
+            'forged-session',self.cmd(key='forged')))
+
+    def test_credential_stored_as_salted_digest(self):
+        host=TrustedPrincipalHost()
+        host.provision('P','C-A','AGT-CEO','s3cret-value')
+        entry=host._registry['P']
+        self.assertNotEqual(entry['digest'],'s3cret-value')
+        self.assertNotIn('s3cret-value',entry['digest'])
+        self.assertTrue(host.issue('P','s3cret-value') is not None)
+
+    def test_disabled_principal_invalidates_issued_sessions(self):
+        host=self._trusted_host()
+        session=host.issue('PRINCIPAL-CEO','ceo-pass-123')
+        gateway=PolicyCommandGateway(self.store,host,self.resolver)
+        gateway.execute(session,self.cmd(key='ok-before-disable'))
+        host.disable('PRINCIPAL-CEO')
+        self.assert_denied('AUTH_PRINCIPAL_DISABLED',lambda:gateway.execute(
+            session,self.cmd(key='after-disable')))
 
 if __name__=='__main__': unittest.main()
