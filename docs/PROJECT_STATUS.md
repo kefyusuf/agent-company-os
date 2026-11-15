@@ -1,6 +1,6 @@
 # Project Status & Repository Handoff
 
-**Verified snapshot:** 2026-11-14  
+**Verified snapshot:** 2026-11-15  
 **Repository:** https://github.com/kefyusuf/agent-company-os  
 **Default branch:** `main`  
 **Status vocabulary:** Designed ≠ Implemented ≠ Locally tested ≠ CI-verified ≠ Production-ready.
@@ -9,7 +9,7 @@
 
 The project began with design sessions before this repository was created. M1–M4 historical decisions were **reconstructed and labeled as design records**; they are not verbatim original artifacts. The authoritative M4.3 contract candidate is version `0.1.0-rc1`.
 
-**Foundational PRs #1–#4, M5.3-A PR #6, M5.3-B1 PR #7 and M5.3-B2 PR #9 have merged into `main`:**
+**Foundational PRs #1–#4, M5.3-A PR #6, M5.3-B1 PR #7, M5.3-B2 PR #9, the M5.3-C design PR #14 and its implementation PRs #15–#17 have merged into `main`:**
 
 | PR | Merged scope | Final status |
 | --- | --- | --- |
@@ -20,6 +20,10 @@ The project began with design sessions before this repository was created. M1–
 | [#6](https://github.com/kefyusuf/agent-company-os/pull/6) | M5.3-A fixture-only trusted command ingress | **Merged** |
 | [#7](https://github.com/kefyusuf/agent-company-os/pull/7) | M5.3-B1 pure policy decision evaluator | **Merged**; 49 exact-source local tests verified |
 | [#9](https://github.com/kefyusuf/agent-company-os/pull/9) | M5.3-B2 SQLite policy gateway integration | **Merged**; 193/193 full-checkout tests verified (2026-11-14) |
+| [#14](https://github.com/kefyusuf/agent-company-os/pull/14) | M5.3-C design (trusted host, approvals, budget, lineage) | **Merged**; owner-approved decisions recorded |
+| [#15](https://github.com/kefyusuf/agent-company-os/pull/15) | M5.3-C PR1: atomic budget reservation + contributor lineage | **Merged**; 204/204 checkout tests |
+| [#16](https://github.com/kefyusuf/agent-company-os/pull/16) | M5.3-C PR2: one-time approval consumption | **Merged**; 206/206 checkout tests |
+| [#17](https://github.com/kefyusuf/agent-company-os/pull/17) | M5.3-C PR3: credential-verified TrustedPrincipalHost | **Merged**; 209/209 checkout tests |
 
 The earlier claim that only a README is on `main` is **obsolete**. The file tree now includes `company_os/store.py`, `company_os/workflow.py`, `tests/`, `docs/` and `contracts/`.
 
@@ -41,7 +45,7 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.3-A | Local fixture-only principal session + allowlisted command gateway | **PR #6 merged**; NOT a production authentication boundary |
 | M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged (PR #7)**; 49 exact-source local tests, not gateway-integrated |
 | M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **Merged (PR #9)**; 52 new tests; full checkout verified 193/193 (2026-11-14) |
-| M5.3-C | Real host authentication and one-time approvals | **Not implemented** |
+| M5.3-C | Trusted host attestation, one-time approvals, budget reservation, review lineage | **Implemented (PRs #14–#17)**; fixture-grade attestation, **NOT production authentication** |
 
 ## Verification evidence and limits
 
@@ -56,14 +60,15 @@ Observed in the local environment:
 - **M5.3-B2 local work directory (2026-11-08, pre-merge):** 101/101 tests passed (49 B1 + 31 SQLite resolver + 21 gateway tests), but this used a lightweight Store/Workflows stand-in and predates later replay/provenance test additions.
 - **Merged `main` checkout (2026-11-13):** **120/120 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean. Includes the M5.3-B1 module merged by PR #7.
 - **M5.3-B2 full checkout (2026-11-14, PR head `2aa569a` + docs-PR #11 merge `80478f1`):** **193/193 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean; `scripts/verify.py` **PASS** (AST inventory 193/193, `all_passed: true`). Independent review found no P1/P2 findings; three P3 notes recorded on PR #9.
+- **M5.3-C full checkout (2026-11-15, PRs #15–#17):** **209/209 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean; `scripts/verify.py` **PASS** (inventory 209/209, `all_passed: true`). Each C PR ran the full suite and raised the verifier floor monotonically (193→204→206→209).
 - **GitHub Actions:** not run. These are fixture/pure-unit results, not full M4.3 conformance or production security.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
 
 **Still missing / NO-GO for autonomous deployment:**
 
-- Real authentication and principal/appointment attestation; direct Store/Workflows still accept **caller-supplied `Actor`**. M5.3-A gateway uses opaque **test sessions only**, not a production principal. M5.3-B1 pure policy values can also be forged without a trusted resolver.
-- Full authenticated default-deny authorization, atomic budget reservation, signed/verified principal context, one-time human approval consumption, and complete independent review provenance. M5.3-B2 adds **fixture-level SQLite enforcement** but does not meet production gates.
+- Production-grade authentication and transport security; direct Store/Workflows still accept **caller-supplied `Actor`** and must never be exposed to untrusted callers. M5.3-C adds a **fixture-grade** credential-verified principal host (`TrustedPrincipalHost`) on top of the B2 policy enforcement, but there is no network transport, IAM, secret store or multi-process deployment — the trusted host and all policy tables stay in-process.
+- Production authorization guarantees: signed/verified principal context, external `OperationAttempt` reconciliation, multi-process-safe locking and budget settlement for external actions. Internal default-deny authorization, company-level budget reservation, one-time approval consumption and attested review lineage are now **implemented at fixture level** (M5.3-C); they do not meet production gates.
 - Real Owner report review/approval, Company readiness and activation; fixture activation uses test-only direct SQLite state changes.
 - Memory verification, actual external evidence integrity/provenance and robust ACL/retention behavior.
 - Real LLM + tools integration, secure external OperationAttempt, leases/checkpoints and result reconciliation.
@@ -80,6 +85,7 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 7. [M5.3-A implementation scope and threats](implementation/m5.3-a-command-gateway.md) — merged PR #6
 8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, merged
 9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — PR #9, merged
+10. [M5.3-C trusted host, approvals, budget and lineage](implementation/m5.3-c-trusted-host.md) — PRs #14–#17, merged
 
 ## Rules for next contributions
 
