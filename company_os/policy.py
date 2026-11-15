@@ -115,6 +115,10 @@ class PolicyContext:
     actor_agent_id: str = ''
     reviewed_author_agent_id: str | None = None
     delegated_reviewer_agent_ids: frozenset[str] = frozenset()
+    # Set ONLY by the trusted resolver when a gateway receipt proves the
+    # matching approval was already consumed at the original committed
+    # execution. Never deserialized from model/user input.
+    approval_replay: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,6 +226,13 @@ class PolicyEvaluator:
                 type(context.payload_sha256) is not str or
                 re.fullmatch(r'sha256:[0-9a-f]{64}', context.payload_sha256) is None):
                 return deny('SCHEMA_APPROVAL_INTENT_INVALID')
+            if context.approval_replay:
+                # The trusted resolver verified a gateway receipt whose
+                # provenance (consumed approval id + receipt key) matches the
+                # original committed execution; the historical approval binding
+                # is reconstructed, not re-verified here.
+                return PolicyOutcome(Decision.PERMIT, 'POLICY_APPROVAL_REPLAY', self.book.version, risk)
+            # All hard denials happen before an approval can have any effect.
             # All hard denials happen before an approval can have any effect.
             if approval is not None and approval.status in ('denied', 'revoked'):
                 return deny('AUTH_APPROVAL_REJECTED')

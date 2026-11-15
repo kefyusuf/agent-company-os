@@ -341,23 +341,35 @@ class SnapshotResolverTests(unittest.TestCase):
         self.set_rule(rule)
         self.rejected('AUTH_EXACT_APPROVAL_REQUIRED')
 
-    def test_approved_snapshot_still_no_execution(self):
+    def test_approved_snapshot_resolves_with_approval_id(self):
         rule={**self.rule,'approval_required':True,'risk_level':'L3'}
         self.set_rule(rule)
         intent='sha256:'+hashlib.sha256(canonical({
             'company_id':'C','action':self.action,'task_id':'T',
             'resource':'task:T','payload':self.payload}).encode()).hexdigest()
-        self.s.db.execute('INSERT INTO policy_approvals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        self.s.db.execute('''INSERT INTO policy_approvals (company_id,id,task_id,action,
+             resource_id,payload_sha256,target_revision,policy_version,expires_at,
+             status,approver_kind,approver_id,consumed_by_receipt)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
           ('C','APR','T',self.action,'task:T',intent,1,'pol@1',
-           (NOW+timedelta(minutes=5)).isoformat(),'approved','human','OWNER'))
-        self.rejected('AUTH_APPROVAL_CONSUMPTION_NOT_IMPLEMENTED')
+           (NOW+timedelta(minutes=5)).isoformat(),'approved','human','OWNER',None))
+        with self.s.tx():
+            info=self.r.enforce(self.actor,self.action,self.payload)
+        self.assertEqual(info['approval_id'],'APR')
+        status=self.s.db.execute(
+            "SELECT status FROM policy_approvals WHERE company_id='C' AND id='APR'").fetchone()['status']
+        # Consumption is the gateway's job, inside the command transaction.
+        self.assertEqual(status,'approved')
 
     def test_approval_wrong_payload(self):
         rule={**self.rule,'approval_required':True,'risk_level':'L3'}
         self.set_rule(rule)
-        self.s.db.execute('INSERT INTO policy_approvals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        self.s.db.execute('''INSERT INTO policy_approvals (company_id,id,task_id,action,
+             resource_id,payload_sha256,target_revision,policy_version,expires_at,
+             status,approver_kind,approver_id,consumed_by_receipt)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
           ('C','APR','T',self.action,'task:T','sha256:'+'0'*64,1,'pol@1',
-           (NOW+timedelta(minutes=5)).isoformat(),'approved','human','OWNER'))
+           (NOW+timedelta(minutes=5)).isoformat(),'approved','human','OWNER',None))
         self.rejected('AUTH_EXACT_APPROVAL_REQUIRED')
 
     def test_corrupt_rule_rejected(self):
