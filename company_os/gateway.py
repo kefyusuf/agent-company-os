@@ -7,6 +7,9 @@ this API; never expose those objects or this fixture issuer as a public API.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, TYPE_CHECKING
@@ -35,6 +38,8 @@ class FixtureSessionHost:
 
     Production must replace this issuer with a transport-authenticated host.
     Session objects must never be serialized, sent to a model or exposed to a user.
+    Quarantined to legacy M5.3-A test paths; new integration tests use
+    TrustedPrincipalHost.
     """
 
     def __init__(self):
@@ -55,6 +60,71 @@ class FixtureSessionHost:
         if result is None:
             raise DomainError('AUTH_UNTRUSTED_SESSION')
         return result
+
+    def revoke(self, session: object) -> None:
+        try:
+            self._sessions.pop(session, None)
+        except TypeError:
+            pass
+
+
+class TrustedPrincipalHost:
+    """M5.3-C1: fixture-grade credential-verified principal host.
+
+    Sessions are issued ONLY after verifying a provisioned credential, so a
+    process holder can no longer mint sessions for arbitrary principals.
+    This is NOT production authentication: the registry lives in this process,
+    credentials arrive from the trusted test transport, and no network, IAM
+    or secret store exists here.
+    """
+
+    def __init__(self):
+        self._sessions: WeakKeyDictionary[_Session, tuple[str, _Principal]] = \
+            WeakKeyDictionary()
+        self._registry: dict[str, dict] = {}
+
+    def provision(self, principal_ref: str, company_id: str, agent_id: str,
+                  credential: str) -> None:
+        """Trusted out-of-band registration; never reachable from commands."""
+        if not principal_ref or not company_id or not agent_id or not credential:
+            raise DomainError('AUTH_INVALID_PRINCIPAL_PROVISION')
+        salt = secrets.token_hex(16)
+        digest = hashlib.sha256((salt + credential).encode('utf-8')).hexdigest()
+        self._registry[principal_ref] = {
+            'company_id': company_id, 'agent_id': agent_id,
+            'salt': salt, 'digest': digest, 'enabled': True,
+        }
+
+    def disable(self, principal_ref: str) -> None:
+        """Revocation propagates: issued sessions of a disabled principal die."""
+        entry = self._registry.get(principal_ref)
+        if entry is not None:
+            entry['enabled'] = False
+
+    def issue(self, principal_ref: str, credential: str) -> object:
+        entry = self._registry.get(principal_ref)
+        if entry is None or not entry['enabled']:
+            raise DomainError('AUTH_BAD_CREDENTIAL')
+        candidate = hashlib.sha256(
+            (entry['salt'] + credential).encode('utf-8')).hexdigest()
+        if not hmac.compare_digest(candidate, entry['digest']):
+            raise DomainError('AUTH_BAD_CREDENTIAL')
+        session = _Session()
+        self._sessions[session] = (principal_ref,
+                                   _Principal(entry['company_id'], entry['agent_id']))
+        return session
+
+    def resolve(self, session: object) -> _Principal:
+        try:
+            item = self._sessions.get(session)  # identity, never a caller string
+        except TypeError:
+            item = None
+        if item is None:
+            raise DomainError('AUTH_UNTRUSTED_SESSION')
+        entry = self._registry.get(item[0])
+        if entry is None or not entry['enabled']:
+            raise DomainError('AUTH_PRINCIPAL_DISABLED')
+        return item[1]
 
     def revoke(self, session: object) -> None:
         try:
