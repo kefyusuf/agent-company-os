@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime,timedelta,timezone
 from company_os.store import Store,Actor,DomainError,canonical
 from company_os.policy_store import SQLitePolicyResolver
+from company_os.operations import ExternalOperationManager, ScriptedExternalAdapter
 from company_os.workflow import Workflows
 
 NOW=datetime.now(timezone.utc)
@@ -388,5 +389,162 @@ class SnapshotResolverTests(unittest.TestCase):
     def _enforce_other_appt(self):
         with self.s.tx():
             self.r.enforce(Actor('C','AGT','APT2'),self.action,self.payload)
+
+class ExternalOperationTests(unittest.TestCase):
+    """M5.4-D1: attempt ledger, scripted adapter seam and FIX-10 guard."""
+
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.s=Store(Path(self.tmp.name)/'operations.db',fixture_bootstrap=True)
+        d=self.s.db
+        d.execute('INSERT INTO companies(id,state) VALUES (?,?)',('C','active'))
+        d.execute('INSERT INTO positions VALUES (?,?,?,?)',('C','P','role.engineer@1',None))
+        d.execute('INSERT INTO agents VALUES (?,?,?)',('C','AGT','permanent'))
+        d.execute('INSERT INTO appointments VALUES (?,?,?,?,?)',('C','APT','AGT','P','active'))
+        # Policy tables (capabilities, grants, rules, budgets) come from the
+        # resolver's schema; instantiate it before inserting policy rows.
+        self.r=SQLitePolicyResolver(self.s)
+        d.execute('INSERT INTO appointment_capabilities VALUES (?,?,?)',('C','APT','cap.dispatch'))
+        d.execute('INSERT INTO company_policy_versions VALUES (?,?,?)',('C','pol@1',1))
+        self.rule={'action':'operation.dispatch','eligible_roles':['role.engineer@1'],
+                   'required_capabilities':['cap.dispatch'],'allowed_task_states':[],
+                   'allowed_company_states':['active'],'task_required':False,
+                   'approval_required':False,'risk_level':'L2'}
+        d.execute('INSERT INTO company_policy_rules VALUES (?,?,?,?,?)',
+                  ('C','pol@1','operation.dispatch',json.dumps(self.rule),3))
+        d.execute('INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)',
+                  ('C','G-EXT','APT',None,'operation.dispatch','external:publish',
+                   (NOW+timedelta(hours=1)).isoformat(),5,1))
+        d.execute('INSERT INTO policy_budgets VALUES (?,?)',('C',10))
+        self.adapter=ScriptedExternalAdapter()
+        self.manager=ExternalOperationManager(self.s,self.adapter)
+        self.actor=Actor('C','AGT','APT')
+        self.payload={'attempt_id':'ATT-1','target_action':'external.publish',
+                      'target_resource':'external:publish','target_payload':{'note':'x'}}
+
+    def tearDown(self):
+        self.s.close()
+        self.tmp.cleanup()
+
+    def set_rule(self,rule,cost=3):
+        self.s.db.execute('INSERT OR REPLACE INTO company_policy_rules VALUES (?,?,?,?,?)',
+                          ('C','pol@1',rule['action'],json.dumps(rule),cost))
+
+    def _run(self,payload,key='k1'):
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.dispatch',payload)
+            return self.manager.dispatch(self.actor,payload,info,key)
+
+    def attempts(self):
+        return self.s.db.execute('SELECT count(*) FROM operation_attempts').fetchone()[0]
+
+    def budget(self):
+        return self.s.db.execute(
+            "SELECT remaining_units FROM policy_budgets WHERE company_id='C'").fetchone()['remaining_units']
+
+    def test_dispatch_succeeded_commits_and_audits(self):
+        self.adapter.script('external.publish','succeeded')
+        result=self._run(self.payload)
+        self.assertEqual(result['state'],'succeeded')
+        self.assertEqual(result['attempt_id'],'ATT-1')
+        row=self.s.db.execute('''SELECT state,adapter_ref,reserved_cost_units,guard_key
+            FROM operation_attempts WHERE company_id='C' AND id='ATT-1' ''').fetchone()
+        self.assertEqual(row['state'],'succeeded')
+        self.assertIsNotNone(row['adapter_ref'])
+        self.assertEqual(row['reserved_cost_units'],3)
+        self.assertEqual(len(row['guard_key']),64)
+        for event in ('operation.authorized','operation.dispatched','operation.succeeded'):
+            count=self.s.db.execute('SELECT count(*) FROM audit_events WHERE event_type=?',
+                                    (event,)).fetchone()[0]
+            self.assertEqual(count,1)
+        self.assertEqual(self.budget(),7)
+
+    def test_dispatch_failed_refunds_budget(self):
+        self.adapter.script('external.publish','failed')
+        result=self._run(self.payload)
+        self.assertEqual(result['state'],'failed')
+        self.assertEqual(self.budget(),10)
+        refunded=self.s.db.execute("SELECT count(*) FROM audit_events WHERE event_type='operation.cost_refunded'").fetchone()[0]
+        self.assertEqual(refunded,1)
+
+    def test_dispatch_unknown_holds_budget(self):
+        self.adapter.script('external.publish','unknown')
+        result=self._run(self.payload)
+        self.assertEqual(result['state'],'unknown')
+        self.assertEqual(self.budget(),7)
+
+    def test_unscripted_adapter_error_rolls_back_everything(self):
+        with self.assertRaises(RuntimeError):
+            self._run(self.payload)
+        self.assertEqual(self.attempts(),0)
+        self.assertEqual(self.budget(),10)
+
+    def test_attempt_binding_is_immutable(self):
+        self.adapter.script('external.publish','succeeded')
+        self._run(self.payload)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute('''UPDATE operation_attempts SET action='other'
+                WHERE company_id='C' AND id='ATT-1' ''')
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute('''UPDATE operation_attempts SET reserved_cost_units=0
+                WHERE company_id='C' AND id='ATT-1' ''')
+
+    def test_duplicate_attempt_id_denied(self):
+        self.adapter.script('external.publish','succeeded')
+        self._run(self.payload,key='first')
+        with self.assertRaises(DomainError) as caught:
+            self._run(self.payload,key='second')
+        self.assertEqual(caught.exception.code,'CONFLICT_ATTEMPT_EXISTS')
+        self.assertEqual(self.attempts(),1)
+
+    def test_unknown_blocks_redispatch_with_same_intent(self):
+        self.adapter.script('external.publish','unknown')
+        self._run(self.payload,key='first')
+        retry={'attempt_id':'ATT-2','target_action':'external.publish',
+               'target_resource':'external:publish','target_payload':{'note':'x'}}
+        with self.assertRaises(DomainError) as caught:
+            self._run(retry,key='retry')
+        self.assertEqual(caught.exception.code,'OPERATION_UNRESOLVED_ATTEMPT_EXISTS')
+        self.assertEqual(self.attempts(),1)
+        self.assertEqual(self.budget(),7)
+
+    def test_policy_denial_leaves_no_attempt(self):
+        self.s.db.execute('UPDATE policy_grants SET active=0')
+        with self.assertRaises(DomainError):
+            self._run(self.payload)
+        self.assertEqual(self.attempts(),0)
+        self.assertEqual(self.budget(),10)
+
+    def test_paused_company_denies_dispatch(self):
+        self.s.db.execute("UPDATE companies SET state='paused' WHERE id='C'")
+        with self.assertRaises(DomainError):
+            self._run(self.payload)
+        self.assertEqual(self.attempts(),0)
+
+    def test_approval_binding_recorded_on_attempt(self):
+        rule={**self.rule,'approval_required':True,'risk_level':'L3'}
+        self.set_rule(rule)
+        self.s.db.execute('INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)',
+                          ('C','G-APR','APT',None,'operation.dispatch','external:approval',
+                           (NOW+timedelta(hours=1)).isoformat(),5,1))
+        approval_payload={'attempt_id':'ATT-APR','target_action':'external.publish',
+                          'target_resource':'external:approval','target_payload':{'n':1}}
+        intent='sha256:'+hashlib.sha256(canonical({
+            'company_id':'C','action':'operation.dispatch','task_id':None,
+            'resource':'external:approval','payload':approval_payload}).encode('utf-8')).hexdigest()
+        self.s.db.execute('''INSERT INTO policy_approvals (company_id,id,task_id,action,
+             resource_id,payload_sha256,target_revision,policy_version,expires_at,
+             status,approver_kind,approver_id,consumed_by_receipt)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            ('C','APR',None,'operation.dispatch','external:approval',intent,1,'pol@1',
+             (NOW+timedelta(minutes=5)).isoformat(),'approved','human','OWNER',None))
+        self.adapter.script('external.publish','succeeded')
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.dispatch',approval_payload)
+            result=self.manager.dispatch(self.actor,approval_payload,info,'apr-key')
+        self.assertEqual(result['state'],'succeeded')
+        row=self.s.db.execute('''SELECT consumed_approval_id FROM operation_attempts
+            WHERE company_id='C' AND id='ATT-APR' ''').fetchone()
+        self.assertEqual(row['consumed_approval_id'],'APR')
 
 if __name__=='__main__': unittest.main()

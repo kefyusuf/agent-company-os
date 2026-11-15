@@ -17,6 +17,7 @@ from weakref import WeakKeyDictionary
 
 from .store import Actor, DomainError, Store
 from .workflow import Workflows
+from .operations import ExternalOperationManager
 
 if TYPE_CHECKING:
     from .policy_store import SQLitePolicyResolver
@@ -164,12 +165,14 @@ class CommandGateway:
     """
 
     def __init__(self, store: Store, host: FixtureSessionHost, *,
-                 policy_resolver: SQLitePolicyResolver | None = None):
+                 policy_resolver: SQLitePolicyResolver | None = None,
+                 operations: ExternalOperationManager | None = None):
         self._store = store
         self._host = host
         self._workflow = Workflows(store)
         # Without a resolver this remains the legacy, local-only M5.3-A fixture.
         self._policy_resolver = policy_resolver
+        self._operations = operations
 
     @staticmethod
     def _validate(command: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -267,12 +270,18 @@ class CommandGateway:
                         # command attempt, atomically with the mutation.
                         self._policy_resolver.consume_approval(
                             actor, approval_id, command['key'], action)
-                    result = self._dispatch(action, actor, p, command['key'])
-                    if action == 'report.submit':
-                        # Host-attested contributor lineage, recorded from
-                        # canonical records in the same transaction.
-                        self._policy_resolver.record_report_lineage(
-                            actor, p['report_id'], p['version'])
+                    if action == 'operation.dispatch':
+                        if self._operations is None:
+                            raise DomainError('OPERATIONS_NOT_CONFIGURED')
+                        result = self._operations.dispatch(
+                            actor, p, policy_info, command['key'])
+                    else:
+                        result = self._dispatch(action, actor, p, command['key'])
+                        if action == 'report.submit':
+                            # Host-attested contributor lineage, recorded from
+                            # canonical records in the same transaction.
+                            self._policy_resolver.record_report_lineage(
+                                actor, p['report_id'], p['version'])
                     if action != 'report.sources':
                         self._policy_resolver.save_gateway_receipt(
                             actor, action, p, command['key'], policy_info, result)
@@ -335,7 +344,11 @@ class PolicyCommandGateway(CommandGateway):
     """
 
     def __init__(self, store: Store, host: FixtureSessionHost,
-                 policy_resolver: SQLitePolicyResolver):
+                 policy_resolver: SQLitePolicyResolver, *,
+                 operations: ExternalOperationManager | None = None):
         if policy_resolver is None or policy_resolver.store is not store:
             raise ValueError('A policy resolver bound to the same Store is required')
-        super().__init__(store, host, policy_resolver=policy_resolver)
+        if operations is not None and operations.store is not store:
+            raise ValueError('The operations manager must be bound to the same Store')
+        super().__init__(store, host, policy_resolver=policy_resolver,
+                         operations=operations)
