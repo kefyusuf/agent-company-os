@@ -145,9 +145,41 @@ class SnapshotResolverTests(unittest.TestCase):
         self.s.db.execute('UPDATE policy_grants SET expires_at=? WHERE company_id=?',((NOW-timedelta(days=1)).isoformat(),'C'))
         self.rejected('AUTH_GRANT_EXPIRED')
 
-    def test_positive_cost_not_executable(self):
+    def test_positive_cost_reserves_budget(self):
+        self.set_rule(self.rule,cost=4)
+        self.s.db.execute('UPDATE policy_grants SET max_cost_units=10 WHERE company_id=?',('C',))
+        self.enforce()
+        remaining=self.s.db.execute(
+            "SELECT remaining_units FROM policy_budgets WHERE company_id='C'").fetchone()['remaining_units']
+        self.assertEqual(remaining,6)
+
+    def test_exact_budget_allowed(self):
+        self.set_rule(self.rule,cost=10)
+        self.s.db.execute('UPDATE policy_grants SET max_cost_units=10 WHERE company_id=?',('C',))
+        self.enforce()
+        remaining=self.s.db.execute(
+            "SELECT remaining_units FROM policy_budgets WHERE company_id='C'").fetchone()['remaining_units']
+        self.assertEqual(remaining,0)
+
+    def test_budget_exceeded_denied(self):
+        self.set_rule(self.rule,cost=11)
+        self.rejected('BUDGET_EXCEEDED')
+        remaining=self.s.db.execute(
+            "SELECT remaining_units FROM policy_budgets WHERE company_id='C'").fetchone()['remaining_units']
+        self.assertEqual(remaining,10)
+
+    def test_budget_missing_row_denied(self):
         self.set_rule(self.rule,cost=1)
-        self.rejected('BUDGET_RESERVATION_NOT_IMPLEMENTED')
+        self.s.db.execute('DELETE FROM policy_budgets')
+        self.rejected('BUDGET_NO_ROW')
+
+    def test_budget_reservation_refunded_on_downstream_denial(self):
+        self.set_rule(self.rule,cost=4)
+        self.s.db.execute('UPDATE policy_grants SET active=0')
+        self.rejected('AUTH_GRANT_SCOPE')
+        remaining=self.s.db.execute(
+            "SELECT remaining_units FROM policy_budgets WHERE company_id='C'").fetchone()['remaining_units']
+        self.assertEqual(remaining,10)
 
     def test_same_identity_independent_review_denied(self):
         rule={**self.rule,'action':'report.review',
@@ -182,6 +214,73 @@ class SnapshotResolverTests(unittest.TestCase):
         self.rejected('POLICY_REVIEW_LINEAGE_UNAVAILABLE',lambda:self.in_tx(lambda:
           self.r.enforce(self.actor,'report.review',
             {'report_id':'R','version':1,'review_id':'RV','decision':'accepted','reason':'x'})))
+
+    def _review_setup(self):
+        rule={**self.rule,'action':'report.review',
+              'allowed_task_states':['under_review'],
+              'independent_reviewer_required':True}
+        self.set_rule(rule)
+        self.s.db.execute('UPDATE tasks SET state=? WHERE company_id=?',('under_review','C'))
+        self.s.db.execute('INSERT INTO positions VALUES (?,?,?,?)',('C','P-OTHER','role.engineer@1',None))
+        self.s.db.execute('INSERT INTO agents VALUES (?,?,?)',('C','AGT-OTHER','permanent'))
+        self.s.db.execute('INSERT INTO appointments VALUES (?,?,?,?,?)',
+                         ('C','APT-OTHER','AGT-OTHER','P-OTHER','active'))
+        self.s.db.execute('INSERT INTO agents VALUES (?,?,?)',('C','AGT-DELEG','permanent'))
+        self.s.db.execute('''INSERT INTO reports (company_id,id,version,task_id,
+             author_appointment_id,author_agent_id,content) VALUES (?,?,?,?,?,?,?)''',
+             ('C','R',1,'T','APT-OTHER','AGT-OTHER','Independent author fixture'))
+        self.s.db.execute('INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)',
+           ('C','REV','APT','T','report.review','task:T',None,0,1))
+
+    def test_attested_lineage_allows_independent_review(self):
+        self._review_setup()
+        self.s.db.execute('''INSERT INTO report_contributor_lineage
+            (company_id,report_id,report_version,contributor_agent_id,
+             contribution_kind,attested_by_appointment_id,recorded_at)
+            VALUES (?,?,?,?,?,?,?)''',
+            ('C','R',1,'AGT-OTHER','author','APT-OTHER',NOW.isoformat()))
+        self.s.db.execute('''INSERT INTO report_contributor_lineage
+            (company_id,report_id,report_version,contributor_agent_id,
+             contribution_kind,attested_by_appointment_id,recorded_at)
+            VALUES (?,?,?,?,?,?,?)''',
+            ('C','R',1,'AGT-DELEG','delegator','APT-OTHER',NOW.isoformat()))
+        with self.s.tx():
+            self.r.enforce(self.actor,'report.review',
+              {'report_id':'R','version':1,'review_id':'RV','decision':'accepted','reason':'x'})
+
+    def test_attested_lineage_contributor_reviewer_denied(self):
+        self._review_setup()
+        self.s.db.execute('''INSERT INTO report_contributor_lineage
+            (company_id,report_id,report_version,contributor_agent_id,
+             contribution_kind,attested_by_appointment_id,recorded_at)
+            VALUES (?,?,?,?,?,?,?)''',
+            ('C','R',1,'AGT-OTHER','author','APT-OTHER',NOW.isoformat()))
+        # The reviewer's own identity is inside the attested contributor set.
+        self.s.db.execute('''INSERT INTO report_contributor_lineage
+            (company_id,report_id,report_version,contributor_agent_id,
+             contribution_kind,attested_by_appointment_id,recorded_at)
+            VALUES (?,?,?,?,?,?,?)''',
+            ('C','R',1,'AGT','implementer','APT-OTHER',NOW.isoformat()))
+        self.rejected('CONFLICT_INDEPENDENT_REVIEW',lambda:self.in_tx(lambda:
+          self.r.enforce(self.actor,'report.review',
+            {'report_id':'R','version':1,'review_id':'RV','decision':'accepted','reason':'x'})))
+
+    def test_report_lineage_is_immutable(self):
+        self.s.db.execute('INSERT INTO agents VALUES (?,?,?)',('C','AGT-AUTH','permanent'))
+        self.s.db.execute('''INSERT INTO reports (company_id,id,version,task_id,
+             author_appointment_id,author_agent_id,content) VALUES (?,?,?,?,?,?,?)''',
+             ('C','R',1,'T','APT','AGT-AUTH','Lineage fixture'))
+        self.s.db.execute('''INSERT INTO report_contributor_lineage
+            (company_id,report_id,report_version,contributor_agent_id,
+             contribution_kind,attested_by_appointment_id,recorded_at)
+            VALUES (?,?,?,?,?,?,?)''',
+            ('C','R',1,'AGT-AUTH','author','APT',NOW.isoformat()))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute('''UPDATE report_contributor_lineage
+                SET contribution_kind=? WHERE company_id=?''',('delegator','C'))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute('''DELETE FROM report_contributor_lineage
+                WHERE company_id=?''',('C',))
 
     def setup_delegation_accept(self):
         rule={**self.rule,'action':'delegation.accept',

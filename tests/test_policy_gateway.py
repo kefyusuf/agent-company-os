@@ -49,7 +49,7 @@ class PolicyGatewayTests(unittest.TestCase):
                 'key':key,'payload':payload}
 
     def set_rule(self,action,role='core.ceo@1',task_required=True,states=None,
-                 capabilities=None,approval=False,risk='L1'):
+                 capabilities=None,approval=False,risk='L1',cost=0):
         if states is None:
             states=['draft']
         value={'action':action,'eligible_roles':[role],
@@ -59,7 +59,7 @@ class PolicyGatewayTests(unittest.TestCase):
                'required_capabilities':capabilities or [],
                'approval_required':approval,'risk_level':risk}
         self.store.db.execute('INSERT OR REPLACE INTO company_policy_rules VALUES (?,?,?,?,?)',
-                              ('C-A',self.version,action,json.dumps(value),0))
+                              ('C-A',self.version,action,json.dumps(value),cost))
 
     def grant(self,gid,appointment,task_id,action,resource,expires=True):
         valid_until=(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat() if expires else None
@@ -458,5 +458,79 @@ class PolicyGatewayTests(unittest.TestCase):
         after=self.store.db.execute('SELECT count(*) FROM audit_events').fetchone()[0]
         self.assertEqual(after,before+1)
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM tasks').fetchone()[0],0)
+
+    def _budget(self):
+        row=self.store.db.execute(
+            'SELECT remaining_units FROM policy_budgets WHERE company_id=?',
+            ('C-A',)).fetchone()
+        return row['remaining_units']
+
+    def test_positive_cost_reserves_and_replays_without_recharge(self):
+        self.store.db.execute('INSERT INTO policy_budgets VALUES (?,?)',('C-A',5))
+        self.set_rule('task.create',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=2)
+        self.store.db.execute('UPDATE policy_grants SET max_cost_units=2 WHERE company_id=? AND id=?',
+                              ('C-A','G-ROOT'))
+        command=self.cmd(key='costly')
+        first=self.gateway.execute(self.ceo,command)
+        self.assertEqual(first['state'],'draft')
+        self.assertEqual(self._budget(),3)
+        self.assertEqual(self.gateway.execute(self.ceo,command),first)
+        self.assertEqual(self._budget(),3)
+        receipt=self.store.db.execute('''SELECT reserved_cost_units
+            FROM policy_gateway_receipts WHERE company_id=? AND idempotency_key=?''',
+            ('C-A','costly')).fetchone()
+        self.assertEqual(receipt['reserved_cost_units'],2)
+
+    def test_positive_cost_denied_when_pool_exhausted(self):
+        self.store.db.execute('INSERT INTO policy_budgets VALUES (?,?)',('C-A',1))
+        self.set_rule('task.create',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=2)
+        self.store.db.execute('UPDATE policy_grants SET max_cost_units=2 WHERE company_id=? AND id=?',
+                              ('C-A','G-ROOT'))
+        self.assert_denied('BUDGET_EXCEEDED',lambda:self.gateway.execute(
+            self.ceo,self.cmd(key='too-costly')))
+        self.assertEqual(self._budget(),1)
+        self.assertIsNone(self.state())
+
+    def _submitted_report(self):
+        command,first=self._accepted_delegation()
+        self.assertEqual(first['state'],'accepted')
+        self.set_rule('task.start',role='software.cto@1',states=['assigned'])
+        self.grant('G-CSTART','APT-CTO','CHILD','task.start','task:CHILD')
+        self.gateway.execute(self.cto,self.cmd('task.start',
+            {'task_id':'CHILD','expected_revision':1},appointment='APT-CTO',key='child-start'))
+        self.set_rule('evidence.add',role='software.cto@1',states=['in_progress'])
+        self.grant('G-EVID','APT-CTO','CHILD','evidence.add','task:CHILD')
+        self.gateway.execute(self.cto,self.cmd('evidence.add',
+            {'task_id':'CHILD','evidence_id':'E-1','source_ref':'fixture://source',
+             'content_sha256':'a'*64},appointment='APT-CTO',key='evidence-1'))
+        self.set_rule('report.submit',role='software.cto@1',states=['in_progress'])
+        self.grant('G-REPORT','APT-CTO','CHILD','report.submit','task:CHILD')
+        report_cmd=self.cmd('report.submit',
+            {'task_id':'CHILD','report_id':'R-CHILD','version':1,'content':'Child analysis',
+             'expected_revision':2,'evidence_ids':['E-1']},
+            appointment='APT-CTO',key='report-1')
+        return report_cmd,self.gateway.execute(self.cto,report_cmd)
+
+    def test_report_submit_records_contributor_lineage(self):
+        report_cmd,first=self._submitted_report()
+        self.assertEqual(first['state'],'submitted')
+        rows=self.store.db.execute('''SELECT contributor_agent_id,contribution_kind
+            FROM report_contributor_lineage
+            WHERE company_id=? AND report_id=? AND report_version=?
+            ORDER BY contributor_agent_id''',('C-A','R-CHILD',1)).fetchall()
+        self.assertEqual([(r['contributor_agent_id'],r['contribution_kind']) for r in rows],
+            [('AGT-CEO','delegator'),('AGT-CTO','author')])
+
+    def test_report_lineage_is_append_only_at_gateway(self):
+        self._submitted_report()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.db.execute('''UPDATE report_contributor_lineage
+                SET contribution_kind='delegator'
+                WHERE company_id=? AND report_id=?''',('C-A','R-CHILD'))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.db.execute('''DELETE FROM report_contributor_lineage
+                WHERE company_id=? AND report_id=?''',('C-A','R-CHILD'))
 
 if __name__=='__main__': unittest.main()

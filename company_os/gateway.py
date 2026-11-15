@@ -192,6 +192,11 @@ class CommandGateway:
                     # and audit all commit in this same outer SQLite tx.
                     policy_info = self._policy_resolver.enforce(actor, action, p)
                     result = self._dispatch(action, actor, p, command['key'])
+                    if action == 'report.submit':
+                        # Host-attested contributor lineage, recorded from
+                        # canonical records in the same transaction.
+                        self._policy_resolver.record_report_lineage(
+                            actor, p['report_id'], p['version'])
                     if action != 'report.sources':
                         self._policy_resolver.save_gateway_receipt(
                             actor, action, p, command['key'], policy_info, result)
