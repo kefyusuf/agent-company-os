@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS policy_gateway_receipts (
     original_accountability TEXT,
     original_assignment TEXT,
     resource_id TEXT NOT NULL,
+    reserved_cost_units INTEGER NOT NULL DEFAULT 0,
     result_json TEXT NOT NULL,
     PRIMARY KEY(company_id,idempotency_key),
     FOREIGN KEY(company_id,appointment_id) REFERENCES appointments(company_id,id),
@@ -135,6 +136,28 @@ CREATE TABLE IF NOT EXISTS policy_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_policy_approval_intent
     ON policy_approvals(company_id,task_id,action,resource_id,payload_sha256,target_revision,policy_version);
+CREATE TABLE IF NOT EXISTS report_contributor_lineage (
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    report_id TEXT NOT NULL, report_version INTEGER NOT NULL,
+    contributor_agent_id TEXT NOT NULL,
+    contribution_kind TEXT NOT NULL
+      CHECK(contribution_kind IN ('author','delegator','implementer')),
+    attested_by_appointment_id TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY(company_id,report_id,report_version,contributor_agent_id),
+    FOREIGN KEY(company_id,report_id,report_version)
+        REFERENCES reports(company_id,id,version),
+    FOREIGN KEY(company_id,contributor_agent_id) REFERENCES agents(company_id,id),
+    FOREIGN KEY(company_id,attested_by_appointment_id)
+        REFERENCES appointments(company_id,id)
+);
+-- Contributor lineage is host-attested provenance: append-only, never rewritten.
+CREATE TRIGGER IF NOT EXISTS immutable_lineage_update
+BEFORE UPDATE ON report_contributor_lineage
+BEGIN SELECT RAISE(ABORT,'IMMUTABLE_REPORT_LINEAGE'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_lineage_delete
+BEFORE DELETE ON report_contributor_lineage
+BEGIN SELECT RAISE(ABORT,'IMMUTABLE_REPORT_LINEAGE'); END;
 """
 
 RULE_FIELDS = frozenset({'action','eligible_roles','required_capabilities',
@@ -378,9 +401,22 @@ class SQLitePolicyResolver:
         budget=self.store.db.execute('''SELECT remaining_units FROM policy_budgets
              WHERE company_id=?''',(actor.company_id,)).fetchone()
         cost=costs[action]
-        # Do not allow positive-cost actions until transactionally reserving funds.
-        if cost!=0:
-            raise DomainError('BUDGET_RESERVATION_NOT_IMPLEMENTED')
+        reserved_cost=0
+        if cost!=0 and replay_receipt is None:
+            # Reserve atomically inside the command transaction; a downstream
+            # failure rolls the reservation back (automatic refund). A cached
+            # replay never re-reserves and never re-charges the company pool.
+            if budget is None:
+                raise DomainError('BUDGET_NO_ROW')
+            if budget['remaining_units'] < cost:
+                raise DomainError('BUDGET_EXCEEDED')
+            cursor=self.store.db.execute('''UPDATE policy_budgets
+                SET remaining_units=remaining_units-?
+                WHERE company_id=? AND remaining_units>=?''',
+                (cost,actor.company_id,cost))
+            if cursor.rowcount!=1:
+                raise DomainError('BUDGET_EXCEEDED')
+            reserved_cost=cost
         intent='sha256:'+hashlib.sha256(canonical({
             'company_id':actor.company_id,'action':action,'task_id':task_id,
             'resource':resource_id,'payload':payload
@@ -399,11 +435,23 @@ class SQLitePolicyResolver:
                 raise DomainError('POLICY_REVIEW_LINEAGE_UNAVAILABLE')
             if author_id == actor.agent_id:
                 raise DomainError('CONFLICT_INDEPENDENT_REVIEW')
-            # A different identity is insufficient evidence of independence:
-            # a controlled subagent or upstream delegation chain can still
-            # create the appearance of independent review. Fail closed until
-            # trusted contributor lineage is stored and verified.
-            raise DomainError('POLICY_REVIEW_LINEAGE_UNAVAILABLE')
+            # A different identity alone is insufficient evidence of
+            # independence: a controlled subagent or upstream delegation chain
+            # can still create the appearance of independent review. The
+            # reviewer must be absent from the host-attested contributor
+            # lineage recorded from canonical records at submission time.
+            lineage=self.store.db.execute('''SELECT contributor_agent_id
+                FROM report_contributor_lineage
+                WHERE company_id=? AND report_id=? AND report_version=?''',
+                (actor.company_id,payload['report_id'],payload['version'])).fetchall()
+            delegated=frozenset(item['contributor_agent_id'] for item in lineage)
+            if not delegated:
+                # Fail closed when no attested lineage exists at all.
+                raise DomainError('POLICY_REVIEW_LINEAGE_UNAVAILABLE')
+            if actor.agent_id in delegated:
+                # Explicit check only refines the error code; the pure
+                # evaluator below would deny the same condition anyway.
+                raise DomainError('CONFLICT_INDEPENDENT_REVIEW')
         ctx=PolicyContext(company_id=actor.company_id,
             principal_company_id=actor.company_id,
             appointment_company_id=actor.company_id,
@@ -415,7 +463,8 @@ class SQLitePolicyResolver:
                         (task['state'] if task else None)),
             resource_id=resource_id,resource_company_id=actor.company_id,
             action=action,payload_sha256=intent,target_revision=revision,
-            requested_cost_units=cost,
+            # A replay is a committed-result lookup, not new spending.
+            requested_cost_units=(0 if replay_receipt is not None else cost),
             remaining_budget_units=budget['remaining_units'] if budget else 0,
             actor_agent_id=actor.agent_id,reviewed_author_agent_id=author_id,
             delegated_reviewer_agent_ids=delegated)
@@ -445,10 +494,11 @@ class SQLitePolicyResolver:
                                       if replay_receipt is not None else
                                       (task['state'] if task else None)),
                 'resource_id':resource_id,
+                'reserved_cost_units':reserved_cost,
                 'original_accountability':(task['accountable_appointment_id']
                                           if task is not None else None),
                 'original_assignment':(task['assigned_appointment_id']
-                                       if task is not None else None)}
+                                      if task is not None else None)}
 
     @staticmethod
     def _gateway_digest(actor: Actor, action: str, payload: dict) -> str:
@@ -490,12 +540,55 @@ class SQLitePolicyResolver:
         self.store.db.execute('''INSERT INTO policy_gateway_receipts
             (company_id,idempotency_key,agent_id,appointment_id,action,
              request_digest,policy_version,rule_digest,task_id,original_task_state,
-             original_accountability,original_assignment,resource_id,result_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+             original_accountability,original_assignment,resource_id,
+             reserved_cost_units,result_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (actor.company_id,key,actor.agent_id,actor.appointment_id,action,
              self._gateway_digest(actor,action,payload),
              policy_info['policy_version'],policy_info['rule_digest'],
              policy_info['task_id'],policy_info['original_task_state'],
              policy_info['original_accountability'],
              policy_info['original_assignment'],policy_info['resource_id'],
-             canonical(result)))
+             policy_info['reserved_cost_units'],canonical(result)))
+
+    def record_report_lineage(self, actor: Actor, report_id: str,
+                              version: int) -> None:
+        """Attest report contributors from canonical records, never from text.
+
+        Called inside the same transaction as an accepted submission. Rows are
+        append-only (immutable triggers) and feed the independent-review guard.
+        """
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        report=self.store.db.execute('''SELECT task_id,author_agent_id,
+            author_appointment_id FROM reports
+            WHERE company_id=? AND id=? AND version=?''',
+            (actor.company_id,report_id,version)).fetchone()
+        if report is None:
+            raise DomainError('REFERENCE_REPORT_NOT_FOUND')
+        entries={report['author_agent_id']:'author'}
+        task_id=report['task_id']
+        while task_id is not None:
+            link=self.store.db.execute('''SELECT parent_task_id,
+                offered_by_appointment_id,target_appointment_id
+                FROM delegations WHERE company_id=? AND child_task_id=?''',
+                (actor.company_id,task_id)).fetchone()
+            if link is None:
+                break
+            for appointment,kind in (
+                    (link['offered_by_appointment_id'],'delegator'),
+                    (link['target_appointment_id'],'implementer')):
+                row=self.store.db.execute('''SELECT agent_id FROM appointments
+                    WHERE company_id=? AND id=?''',
+                    (actor.company_id,appointment)).fetchone()
+                if row is not None and row['agent_id'] not in entries:
+                    entries[row['agent_id']]=kind
+            task_id=link['parent_task_id']
+        recorded_at=datetime.now(timezone.utc).isoformat()
+        for agent_id,kind in entries.items():
+            self.store.db.execute('''INSERT INTO report_contributor_lineage
+                (company_id,report_id,report_version,contributor_agent_id,
+                 contribution_kind,attested_by_appointment_id,recorded_at)
+                VALUES (?,?,?,?,?,?,?)''',
+                (actor.company_id,report_id,version,agent_id,kind,
+                 report['author_appointment_id'],recorded_at))
