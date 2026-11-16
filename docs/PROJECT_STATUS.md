@@ -1,6 +1,6 @@
 # Project Status & Repository Handoff
 
-**Verified snapshot:** 2026-11-15  
+**Verified snapshot:** 2026-11-16  
 **Repository:** https://github.com/kefyusuf/agent-company-os  
 **Default branch:** `main`  
 **Status vocabulary:** Designed ≠ Implemented ≠ Locally tested ≠ CI-verified ≠ Production-ready.
@@ -9,7 +9,7 @@
 
 The project began with design sessions before this repository was created. M1–M4 historical decisions were **reconstructed and labeled as design records**; they are not verbatim original artifacts. The authoritative M4.3 contract candidate is version `0.1.0-rc1`.
 
-**Foundational PRs #1–#4, M5.3-A PR #6, M5.3-B1 PR #7, M5.3-B2 PR #9, the M5.3-C design PR #14 and its implementation PRs #15–#17 have merged into `main`:**
+**Foundational PRs #1–#4, M5.3-A PR #6, M5.3-B1 PR #7, M5.3-B2 PR #9, M5.3-C PRs #14–#17, M5.4 design PR #19 and M5.4 D-PR1 PR #20 have merged into `main`:**
 
 | PR | Merged scope | Final status |
 | --- | --- | --- |
@@ -24,6 +24,7 @@ The project began with design sessions before this repository was created. M1–
 | [#15](https://github.com/kefyusuf/agent-company-os/pull/15) | M5.3-C PR1: atomic budget reservation + contributor lineage | **Merged**; 204/204 checkout tests |
 | [#16](https://github.com/kefyusuf/agent-company-os/pull/16) | M5.3-C PR2: one-time approval consumption | **Merged**; 206/206 checkout tests |
 | [#17](https://github.com/kefyusuf/agent-company-os/pull/17) | M5.3-C PR3: credential-verified TrustedPrincipalHost | **Merged**; 209/209 checkout tests |
+| [#20](https://github.com/kefyusuf/agent-company-os/pull/20) | M5.4 D-PR1: OperationAttempt ledger + scripted adapter seam + FIX-10 guard | **Merged**; 220/220 checkout tests |
 
 The earlier claim that only a README is on `main` is **obsolete**. The file tree now includes `company_os/store.py`, `company_os/workflow.py`, `tests/`, `docs/` and `contracts/`.
 
@@ -46,6 +47,7 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged (PR #7)**; 49 exact-source local tests, not gateway-integrated |
 | M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **Merged (PR #9)**; 52 new tests; full checkout verified 193/193 (2026-11-14) |
 | M5.3-C | Trusted host attestation, one-time approvals, budget reservation, review lineage | **Implemented (PRs #14–#17)**; fixture-grade attestation, **NOT production authentication** |
+| M5.4 | External operation boundary: attempt ledger + adapter seam | **D-PR1 merged (PR #20)**; D-PR2 (reconciliation) and D-PR3 (human decision records) pending; no real effects, production NO-GO unchanged |
 
 ## Verification evidence and limits
 
@@ -61,7 +63,8 @@ Observed in the local environment:
 - **Merged `main` checkout (2026-11-13):** **120/120 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean. Includes the M5.3-B1 module merged by PR #7.
 - **M5.3-B2 full checkout (2026-11-14, PR head `2aa569a` + docs-PR #11 merge `80478f1`):** **193/193 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean; `scripts/verify.py` **PASS** (AST inventory 193/193, `all_passed: true`). Independent review found no P1/P2 findings; three P3 notes recorded on PR #9.
 - **M5.3-C full checkout (2026-11-15, PRs #15–#17):** **209/209 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean; `scripts/verify.py` **PASS** (inventory 209/209, `all_passed: true`). Each C PR ran the full suite and raised the verifier floor monotonically (193→204→206→209).
-- **GitHub Actions:** not run. These are fixture/pure-unit results, not full M4.3 conformance or production security.
+- **M5.4 D-PR1 full checkout (2026-11-16, PR #20):** **220/220 tests** passed; `compileall` clean; `scripts/verify.py` **PASS** (floor 219→220); coverage on `company_os` measured at **90% total** (`--fail-under=85` gate added to CI). Lint gate introduced (`ruff`, config `ruff.toml`); repository passes clean.
+- **GitHub Actions:** CI enforcement **begins with the hardening PR** — `.github/workflows/ci.yml` runs compileall, ruff, the full suite, a 85% coverage gate and `scripts/verify.py` on every push/PR. Fixture/pure-unit scope unchanged; not full M4.3 conformance or production security.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
 
@@ -86,6 +89,7 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, merged
 9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — PR #9, merged
 10. [M5.3-C trusted host, approvals, budget and lineage](implementation/m5.3-c-trusted-host.md) — PRs #14–#17, merged
+11. [M5.4 external operation boundary](implementation/m5.4-external-operation-boundary.md) — PR #19 design merged, D-PR1 (PR #20) merged; D-PR2/D-PR3 pending
 
 ## Rules for next contributions
 

@@ -1,0 +1,15 @@
+# Minimal lint gate, tuned to the repository's compact style.
+# line-length matches the existing code; the rule set starts conservative
+# and only grows (monotonic, like scripts/verify.py).
+line-length = 160
+target-version = "py313"
+
+[lint]
+select = ["E", "F", "W"]
+ignore = [
+  "E741",  # ambiguous variable names are used sparingly in fixtures
+]
+
+[lint.per-file-ignores]
+# Test fixtures intentionally assert on error paths and reuse compact helpers.
+"tests/*" = ["E501"]

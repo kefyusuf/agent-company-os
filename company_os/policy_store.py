@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 from .policy import (ApprovalSnapshot, Decision, PolicyBook, PolicyContext,
                      PolicyEvaluator, PolicyRule, ScopeGrant)

@@ -636,4 +636,5 @@ class PolicyGatewayTests(unittest.TestCase):
             'SELECT remaining_units FROM policy_budgets WHERE company_id=?',
             ('C-A',)).fetchone()['remaining_units'],8)
 
-if __name__=='__main__': unittest.main()
+if __name__ == '__main__':
+    unittest.main()
