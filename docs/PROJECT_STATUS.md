@@ -25,6 +25,7 @@ The project began with design sessions before this repository was created. M1–
 | [#16](https://github.com/kefyusuf/agent-company-os/pull/16) | M5.3-C PR2: one-time approval consumption | **Merged**; 206/206 checkout tests |
 | [#17](https://github.com/kefyusuf/agent-company-os/pull/17) | M5.3-C PR3: credential-verified TrustedPrincipalHost | **Merged**; 209/209 checkout tests |
 | [#20](https://github.com/kefyusuf/agent-company-os/pull/20) | M5.4 D-PR1: OperationAttempt ledger + scripted adapter seam + FIX-10 guard | **Merged**; 220/220 checkout tests |
+| [#23](https://github.com/kefyusuf/agent-company-os/pull/23) | M5.4 D-PR2: reconciliation command for unknown attempts | **Merged**; 227/227 tests, CI-verified on the PR |
 
 The earlier claim that only a README is on `main` is **obsolete**. The file tree now includes `company_os/store.py`, `company_os/workflow.py`, `tests/`, `docs/` and `contracts/`.
 
@@ -47,7 +48,7 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged (PR #7)**; 49 exact-source local tests, not gateway-integrated |
 | M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **Merged (PR #9)**; 52 new tests; full checkout verified 193/193 (2026-11-14) |
 | M5.3-C | Trusted host attestation, one-time approvals, budget reservation, review lineage | **Implemented (PRs #14–#17)**; fixture-grade attestation, **NOT production authentication** |
-| M5.4 | External operation boundary: attempt ledger + adapter seam | **D-PR1 merged (PR #20)**; D-PR2 (reconciliation) and D-PR3 (human decision records) pending; no real effects, production NO-GO unchanged |
+| M5.4 | External operation boundary: attempt ledger + adapter seam | **D-PR1 (PR #20) and D-PR2 (PR #23) merged**; D-PR3 (human decision records + reissue + pause guards) pending; no real effects, production NO-GO unchanged |
 
 ## Verification evidence and limits
 
@@ -64,6 +65,7 @@ Observed in the local environment:
 - **M5.3-B2 full checkout (2026-11-14, PR head `2aa569a` + docs-PR #11 merge `80478f1`):** **193/193 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean; `scripts/verify.py` **PASS** (AST inventory 193/193, `all_passed: true`). Independent review found no P1/P2 findings; three P3 notes recorded on PR #9.
 - **M5.3-C full checkout (2026-11-15, PRs #15–#17):** **209/209 tests** passed via `python -m unittest discover -s tests -q`; `python -m compileall -q company_os tests` clean; `scripts/verify.py` **PASS** (inventory 209/209, `all_passed: true`). Each C PR ran the full suite and raised the verifier floor monotonically (193→204→206→209).
 - **M5.4 D-PR1 full checkout (2026-11-16, PR #20):** **220/220 tests** passed; `compileall` clean; `scripts/verify.py` **PASS** (floor 219→220); coverage on `company_os` measured at **90% total** (`--fail-under=85` gate added to CI). Lint gate introduced (`ruff`, config `ruff.toml`); repository passes clean.
+- **M5.4 D-PR2 (2026-11-16, PR #23):** **227/227 tests**, `ruff` clean, `scripts/verify.py` **PASS** (floor 220→227), and **CI green on the PR itself** (run `43938159509`) — the first feature PR fully gated by the new CI.
 - **GitHub Actions (2026-11-16):** **first green CI run recorded** — run `43927485071` on `main` after the hardening merge, conclusion **success** (`compileall` + `ruff` + 220-test suite + 85% coverage gate + `scripts/verify.py`). The suite is now machine-enforced on every push/PR; fixture/pure-unit scope unchanged, not full M4.3 conformance or production security.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
