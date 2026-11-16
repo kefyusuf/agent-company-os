@@ -14,6 +14,7 @@ from pathlib import Path
 from company_os import DomainError, Store
 from company_os.gateway import (CommandGateway, FixtureSessionHost, PolicyCommandGateway,
                                 TrustedPrincipalHost)
+from company_os.operations import ExternalOperationManager, ScriptedExternalAdapter
 from company_os.policy_store import SQLitePolicyResolver
 from company_os.store import canonical
 
@@ -611,5 +612,28 @@ class PolicyGatewayTests(unittest.TestCase):
         host.disable('PRINCIPAL-CEO')
         self.assert_denied('AUTH_PRINCIPAL_DISABLED',lambda:gateway.execute(
             session,self.cmd(key='after-disable')))
+
+    def test_operation_dispatch_end_to_end(self):
+        adapter=ScriptedExternalAdapter()
+        adapter.script('external.demo','succeeded')
+        gateway=PolicyCommandGateway(self.store,self.host,self.resolver,
+            operations=ExternalOperationManager(self.store,adapter))
+        self.store.db.execute('INSERT INTO policy_budgets VALUES (?,?)',('C-A',10))
+        self.set_rule('operation.dispatch',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=2)
+        self.grant('G-EXT','APT-CEO',None,'operation.dispatch','external:demo')
+        self.store.db.execute('UPDATE policy_grants SET max_cost_units=5 WHERE company_id=? AND id=?',
+                              ('C-A','G-EXT'))
+        command=self.cmd('operation.dispatch',
+            {'attempt_id':'ATT-G1','target_action':'external.demo',
+             'target_resource':'external:demo','target_payload':{'x':1}},key='op-1')
+        result=gateway.execute(self.ceo,command)
+        self.assertEqual(result['state'],'succeeded')
+        self.assertEqual(self.store.db.execute(
+            "SELECT state FROM operation_attempts WHERE company_id='C-A' AND id='ATT-G1'").fetchone()['state'],
+            'succeeded')
+        self.assertEqual(self.store.db.execute(
+            'SELECT remaining_units FROM policy_budgets WHERE company_id=?',
+            ('C-A',)).fetchone()['remaining_units'],8)
 
 if __name__=='__main__': unittest.main()

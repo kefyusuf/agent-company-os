@@ -153,6 +153,8 @@ ROUTES = MappingProxyType({
                       'decision': str, 'reason': str},
     'task.accept': {'task_id': str, 'expected_revision': int},
     'report.sources': {'report_id': str, 'version': int},
+    'operation.dispatch': {'attempt_id': str, 'target_action': str,
+                           'target_resource': str, 'target_payload': dict},
 })
 
 
