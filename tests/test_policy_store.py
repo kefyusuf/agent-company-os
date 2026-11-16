@@ -546,5 +546,70 @@ class ExternalOperationTests(unittest.TestCase):
             WHERE company_id='C' AND id='ATT-APR' ''').fetchone()
         self.assertEqual(row['consumed_approval_id'],'APR')
 
+    def _dispatch_unknown(self, key='d1'):
+        self.adapter.script('external.publish','unknown')
+        result=self._run(self.payload,key=key)
+        ref=self.s.db.execute(
+            "SELECT adapter_ref FROM operation_attempts WHERE company_id='C' AND id='ATT-1'").fetchone()['adapter_ref']
+        return result,ref
+
+    def _reconcile(self,attempt_id='ATT-1',key='rec-1'):
+        with self.s.tx():
+            return self.manager.reconcile(self.actor,{'attempt_id':attempt_id},key)
+
+    def test_reconcile_unknown_resolves_succeeded(self):
+        _,ref=self._dispatch_unknown()
+        self.assertEqual(self.budget(),7)
+        self.adapter.script_status(ref,'succeeded')
+        result=self._reconcile()
+        self.assertEqual(result['state'],'succeeded')
+        row=self.s.db.execute("SELECT state FROM operation_attempts WHERE company_id='C' AND id='ATT-1'").fetchone()
+        self.assertEqual(row['state'],'succeeded')
+        self.assertEqual(self.budget(),7)
+
+    def test_reconcile_resolved_failed_refunds_budget(self):
+        _,ref=self._dispatch_unknown()
+        self.adapter.script_status(ref,'failed')
+        result=self._reconcile()
+        self.assertEqual(result['state'],'failed')
+        self.assertEqual(self.budget(),10)
+        refunded=self.s.db.execute("SELECT count(*) FROM audit_events WHERE event_type='operation.cost_refunded'").fetchone()[0]
+        self.assertEqual(refunded,1)
+
+    def test_reconcile_unresolvable_marks_unresolved_terminal(self):
+        self._dispatch_unknown()
+        result=self._reconcile()
+        self.assertEqual(result['state'],'unresolved')
+        self.assertEqual(self.budget(),7)
+        with self.assertRaises(DomainError) as caught:
+            self._reconcile()
+        self.assertEqual(caught.exception.code,'OPERATION_RECONCILE_NOT_ALLOWED')
+
+    def test_reconcile_requires_unknown_state(self):
+        self.adapter.script('external.publish','succeeded')
+        self._run(self.payload,key='d1')
+        with self.assertRaises(DomainError) as caught:
+            self._reconcile()
+        self.assertEqual(caught.exception.code,'OPERATION_RECONCILE_NOT_ALLOWED')
+
+    def test_unresolved_blocks_redispatch(self):
+        self._dispatch_unknown()
+        self._reconcile()
+        retry={'attempt_id':'ATT-2','target_action':'external.publish',
+               'target_resource':'external:publish','target_payload':{'note':'x'}}
+        with self.assertRaises(DomainError) as caught:
+            self._run(retry,key='retry')
+        self.assertEqual(caught.exception.code,'OPERATION_UNRESOLVED_ATTEMPT_EXISTS')
+        self.assertEqual(self.attempts(),1)
+
+    def test_reconcile_audits_transitions(self):
+        _,ref=self._dispatch_unknown()
+        self.adapter.script_status(ref,'failed')
+        self._reconcile()
+        for event in ('operation.reconciling','operation.failed'):
+            count=self.s.db.execute('SELECT count(*) FROM audit_events WHERE event_type=?',
+                                    (event,)).fetchone()[0]
+            self.assertEqual(count,1)
+
 if __name__ == '__main__':
     unittest.main()

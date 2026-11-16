@@ -155,6 +155,7 @@ ROUTES = MappingProxyType({
     'report.sources': {'report_id': str, 'version': int},
     'operation.dispatch': {'attempt_id': str, 'target_action': str,
                            'target_resource': str, 'target_payload': dict},
+    'operation.reconcile': {'attempt_id': str},
 })
 
 
@@ -277,6 +278,11 @@ class CommandGateway:
                             raise DomainError('OPERATIONS_NOT_CONFIGURED')
                         result = self._operations.dispatch(
                             actor, p, policy_info, command['key'])
+                    elif action == 'operation.reconcile':
+                        if self._operations is None:
+                            raise DomainError('OPERATIONS_NOT_CONFIGURED')
+                        result = self._operations.reconcile(
+                            actor, p, command['key'])
                     else:
                         result = self._dispatch(action, actor, p, command['key'])
                         if action == 'report.submit':

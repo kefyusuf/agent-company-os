@@ -636,5 +636,34 @@ class PolicyGatewayTests(unittest.TestCase):
             'SELECT remaining_units FROM policy_budgets WHERE company_id=?',
             ('C-A',)).fetchone()['remaining_units'],8)
 
+    def test_operation_reconcile_end_to_end(self):
+        adapter=ScriptedExternalAdapter()
+        adapter.script('external.demo','unknown')
+        gateway=PolicyCommandGateway(self.store,self.host,self.resolver,
+            operations=ExternalOperationManager(self.store,adapter))
+        self.store.db.execute('INSERT INTO policy_budgets VALUES (?,?)',('C-A',10))
+        self.set_rule('operation.dispatch',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=2)
+        self.grant('G-EXT','APT-CEO',None,'operation.dispatch','external:demo')
+        self.store.db.execute('UPDATE policy_grants SET max_cost_units=5 WHERE company_id=? AND id=?',
+                              ('C-A','G-EXT'))
+        dispatch_cmd=self.cmd('operation.dispatch',
+            {'attempt_id':'ATT-G2','target_action':'external.demo',
+             'target_resource':'external:demo','target_payload':{'x':1}},key='op-2')
+        self.assertEqual(gateway.execute(self.ceo,dispatch_cmd)['state'],'unknown')
+        self.set_rule('operation.reconcile',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=0)
+        self.grant('G-REC','APT-CEO',None,'operation.reconcile','company:C-A')
+        rec_cmd=self.cmd('operation.reconcile',{'attempt_id':'ATT-G2'},key='rec-1')
+        result=gateway.execute(self.ceo,rec_cmd)
+        self.assertEqual(result['state'],'unresolved')
+        self.assertEqual(self.store.db.execute(
+            "SELECT state FROM operation_attempts WHERE company_id='C-A' AND id='ATT-G2'").fetchone()['state'],
+            'unresolved')
+        self.assertEqual(self.store.db.execute(
+            'SELECT remaining_units FROM policy_budgets WHERE company_id=?',
+            ('C-A',)).fetchone()['remaining_units'],8)
+        self.assertEqual(gateway.execute(self.ceo,rec_cmd),result)
+
 if __name__ == '__main__':
     unittest.main()
