@@ -191,6 +191,7 @@ TASK_FIELD = {
     'report.review': 'report_lookup',
     'task.accept': 'task_id',
     'report.sources': 'report_lookup',
+    'operation.dispatch': None,
 }
 
 
@@ -354,7 +355,11 @@ class SQLitePolicyResolver:
         task=self._task_for_action(actor.company_id,action,payload,
                                    replay=replay_receipt is not None)
         task_id=task['id'] if task is not None else None
-        resource_id='task:'+task_id if task_id else 'company:'+actor.company_id
+        if action == 'operation.dispatch':
+            # The grant must scope the exact external resource, e.g. external:publish.
+            resource_id = payload['target_resource']
+        else:
+            resource_id='task:'+task_id if task_id else 'company:'+actor.company_id
         if replay_receipt is not None and action == 'delegation.accept':
             # The original offer revision may be stale (the accept succeeded),
             # but the accepted delegation itself and its reporting chain must
@@ -522,6 +527,7 @@ class SQLitePolicyResolver:
                 'resource_id':resource_id,
                 'reserved_cost_units':reserved_cost,
                 'approval_id':approval_id,
+                'intent':intent,
                 'original_accountability':(task['accountable_appointment_id']
                                           if task is not None else None),
                 'original_assignment':(task['assigned_appointment_id']
