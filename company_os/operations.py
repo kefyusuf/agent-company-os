@@ -91,12 +91,23 @@ class ScriptedExternalAdapter:
 
     def __init__(self):
         self._script: dict[str, list[dict]] = {}
+        self._status_override: dict[str, str] = {}
         self._history: list[dict] = []
 
     def script(self, action: str, outcome: str) -> None:
         if outcome not in OUTCOMES:
             raise ValueError('invalid scripted outcome')
         self._script.setdefault(action, []).append({'outcome': outcome})
+
+    def script_status(self, adapter_ref: str, outcome: str) -> None:
+        """Override the recorded status of one dispatched attempt.
+
+        Models the external world changing after dispatch: a reconciliation
+        query may observe a settled outcome the original dispatch could not.
+        """
+        if outcome not in OUTCOMES:
+            raise ValueError('invalid scripted outcome')
+        self._status_override[adapter_ref] = outcome
 
     def dispatch(self, attempt: dict) -> dict:
         queue = self._script.get(attempt['action'])
@@ -116,7 +127,8 @@ class ScriptedExternalAdapter:
     def status(self, adapter_ref: str) -> dict | None:
         for item in self._history:
             if item['adapter_ref'] == adapter_ref:
-                return {'outcome': item['outcome'], 'adapter_ref': adapter_ref}
+                outcome = self._status_override.get(adapter_ref, item['outcome'])
+                return {'outcome': outcome, 'adapter_ref': adapter_ref}
         return None
 
 
@@ -229,3 +241,52 @@ class ExternalOperationManager:
         return {'attempt_id': attempt_id, 'state': outcome,
                 'adapter_ref': call['adapter_ref'],
                 'resource_id': payload['target_resource']}
+
+    def reconcile(self, actor: Actor, payload: dict, receipt_key: str) -> dict:
+        """Reconcile one dispatched attempt inside the caller's transaction.
+
+        The gateway re-enforces the role-gated `operation.reconcile` policy
+        before this runs (owner decision: trusted-host command, audited).
+        The adapter status for the attempt's adapter_ref is the only evidence:
+        settled evidence resolves the attempt (refund on `failed` per the
+        owner decisions); unknown or absent evidence records the **terminal**
+        `unresolved` state and stops — no state may be inferred (FIX-10).
+        """
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        company = actor.company_id
+        attempt_id = payload['attempt_id']
+        attempt = self.store.db.execute(
+            '''SELECT state,adapter_ref,reserved_cost_units
+               FROM operation_attempts WHERE company_id=? AND id=?''',
+            (company, attempt_id)).fetchone()
+        if attempt is None:
+            raise DomainError('REFERENCE_ATTEMPT_NOT_FOUND')
+        if attempt['state'] != 'unknown':
+            # Reconciliation starts only from `unknown`: dispatched outcomes
+            # are already settled, and `unresolved` is terminal until a human
+            # reconciliation decision exists (D-PR3).
+            raise DomainError('OPERATION_RECONCILE_NOT_ALLOWED')
+        actor_ref = f'agent:{actor.agent_id}@{actor.appointment_id}'
+        self._transition(company, attempt_id, 'unknown', 'reconciling', actor_ref,
+                         {'receipt': receipt_key})
+        evidence = None
+        if attempt['adapter_ref'] is not None:
+            evidence = self.adapter.status(attempt['adapter_ref'])
+        if evidence is None or evidence['outcome'] == 'unknown':
+            self._transition(company, attempt_id, 'reconciling', 'unresolved',
+                             actor_ref, {'reason': 'no_settled_evidence'})
+            return {'attempt_id': attempt_id, 'state': 'unresolved'}
+        outcome = evidence['outcome']
+        self._transition(company, attempt_id, 'reconciling', outcome, actor_ref,
+                         {'adapter_ref': evidence['adapter_ref']})
+        if outcome == 'failed' and attempt['reserved_cost_units'] > 0:
+            self.store.db.execute(
+                'UPDATE policy_budgets SET remaining_units=remaining_units+? WHERE company_id=?',
+                (attempt['reserved_cost_units'], company))
+            self.store.audit(company, 'policy_budget', company,
+                             'operation.cost_refunded', actor_ref,
+                             {'attempt_id': attempt_id,
+                              'units': attempt['reserved_cost_units']})
+        # succeeded: held cost is now consumed; unresolved: still held (D-PR3 settles).
+        return {'attempt_id': attempt_id, 'state': outcome}

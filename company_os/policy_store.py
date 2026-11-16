@@ -191,6 +191,7 @@ TASK_FIELD = {
     'task.accept': 'task_id',
     'report.sources': 'report_lookup',
     'operation.dispatch': None,
+    'operation.reconcile': None,
 }
 
 
