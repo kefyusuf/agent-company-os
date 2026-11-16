@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install lint/coverage tooling
+        run: python -m pip install --quiet ruff coverage
+
+      - name: Syntax check
+        run: python -m compileall -q company_os tests
+
+      - name: Lint (ruff)
+        run: python -m ruff check company_os tests scripts
+
+      - name: Full deterministic suite
+        run: python -m unittest discover -s tests -q
+
+      - name: Coverage on company_os
+        run: |
+          coverage run --source=company_os -m unittest discover -s tests -q
+          coverage report --fail-under=85
+
+      - name: Offline verification gate (inventory + suite + syntax)
+        run: python scripts/verify.py --output .local/verification.json
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-evidence
+          path: .local/verification.json

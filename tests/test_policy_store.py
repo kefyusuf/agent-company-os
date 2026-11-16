@@ -5,7 +5,6 @@ import sqlite3
 import unittest
 import tempfile
 from pathlib import Path
-from dataclasses import replace
 from datetime import datetime,timedelta,timezone
 from company_os.store import Store,Actor,DomainError,canonical
 from company_os.policy_store import SQLitePolicyResolver
@@ -547,4 +546,5 @@ class ExternalOperationTests(unittest.TestCase):
             WHERE company_id='C' AND id='ATT-APR' ''').fetchone()
         self.assertEqual(row['consumed_approval_id'],'APR')
 
-if __name__=='__main__': unittest.main()
+if __name__ == '__main__':
+    unittest.main()

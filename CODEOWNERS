@@ -1,0 +1,5 @@
+# Default ownership: the repository owner reviews every path.
+# Until a second reviewer joins, security-critical changes additionally
+# follow the self-review protocol in .github/pull_request_template.md
+# and the false-positive registry in SECURITY.md.
+* @kefyusuf
