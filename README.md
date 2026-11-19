@@ -1,6 +1,7 @@
 # AI Company OS
 
 [![ci](https://github.com/kefyusuf/agent-company-os/actions/workflows/ci.yml/badge.svg)](https://github.com/kefyusuf/agent-company-os/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 An **industry-agnostic, provider-independent AI company operating system** built around persistent agent identities, explicit organizational hierarchy, delegated work, evidence-based reporting, durable institutional memory, and policy-controlled execution.
 
@@ -42,6 +43,6 @@ An agent's **identity and work history are durable**; individual model/tool exec
 3. Do not enable autonomous production deployments, payments, unrestricted customer-data access, or other high-impact external actions.
 4. Keep changes reviewable in focused pull requests. Include evidence of tests run and clearly report anything not tested.
 
-**Project stage:** M5.2 workflow, M5.3-A command gateway, M5.3-B1 policy evaluator, M5.3-B2 SQLite policy gateway, M5.3-C (trusted host attestation, one-time approvals, budget reservation, review lineage) and M5.4 D-PR1 (OperationAttempt ledger + scripted adapter seam) are merged. The local suite reports 220 passing tests (2026-11-16); **GitHub Actions CI now enforces the suite, lint, coverage and the offline verifier on every push and pull request**. The `Actor` type is caller asserted and must not be exposed to untrusted clients.
+**Project stage:** M5.2 workflow, M5.3-A command gateway, M5.3-B1 policy evaluator, M5.3-B2 SQLite policy gateway, M5.3-C (trusted host attestation, one-time approvals, budget reservation, review lineage), M5.4 D-PR1 (OperationAttempt ledger + scripted adapter seam) and D-PR2 (reconciliation command for unknown attempts) are merged. The suite reports 227 passing tests (CI-verified on PR #23, run 43938159509; re-verified locally 2026-11-19); **GitHub Actions CI enforces the suite, lint, coverage and the offline verifier on every push and pull request**. The `Actor` type is caller asserted and must not be exposed to untrusted clients.
 
-[Next: runtime/tool adapter gate — external side effects remain NO-GO until OperationAttempt reconciliation is implemented](docs/implementation/m5.3-authorization-boundary.md)
+[Next: M5.4 D-PR3 — human decision records, reissue and pause guards; external side effects remain NO-GO until the external operation boundary is complete](docs/implementation/m5.4-external-operation-boundary.md)
