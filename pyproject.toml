@@ -1,0 +1,45 @@
+# PEP 621 project manifest. The runtime stays standard-library-only; this
+# file carries project identity/metadata and tool configuration (lint rules
+# absorbed from the former ruff.toml). It never introduces runtime deps.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-company-os"
+version = "0.1.0"
+description = "Industry-agnostic, provider-independent AI company operating system: persistent agent identities, explicit hierarchy, delegated work, evidence-based reporting and policy-controlled execution."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+authors = [{ name = "Yusuf KEF" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Repository = "https://github.com/kefyusuf/agent-company-os"
+"Project Status Ledger" = "https://github.com/kefyusuf/agent-company-os/blob/main/docs/PROJECT_STATUS.md"
+"Security Policy" = "https://github.com/kefyusuf/agent-company-os/blob/main/SECURITY.md"
+
+[tool.setuptools]
+packages = ["company_os"]
+
+# Lint gate absorbed from ruff.toml (ruff reads [tool.ruff] from
+# pyproject.toml when ruff.toml is absent). Minimal rule set, tuned to the
+# repository's compact style; starts conservative and only grows
+# (monotonic, like scripts/verify.py).
+[tool.ruff]
+line-length = 160
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+  "E741",  # ambiguous variable names are used sparingly in fixtures
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test fixtures intentionally assert on error paths and reuse compact helpers.
+"tests/*" = ["E501"]
