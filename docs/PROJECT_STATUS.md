@@ -1,6 +1,6 @@
 # Project Status & Repository Handoff
 
-**Verified snapshot:** 2026-11-16  
+**Verified snapshot:** 2026-11-19  
 **Repository:** https://github.com/kefyusuf/agent-company-os  
 **Default branch:** `main`  
 **Status vocabulary:** Designed ≠ Implemented ≠ Locally tested ≠ CI-verified ≠ Production-ready.
@@ -67,6 +67,7 @@ Observed in the local environment:
 - **M5.4 D-PR1 full checkout (2026-11-16, PR #20):** **220/220 tests** passed; `compileall` clean; `scripts/verify.py` **PASS** (floor 219→220); coverage on `company_os` measured at **90% total** (`--fail-under=85` gate added to CI). Lint gate introduced (`ruff`, config `ruff.toml`); repository passes clean.
 - **M5.4 D-PR2 (2026-11-16, PR #23):** **227/227 tests**, `ruff` clean, `scripts/verify.py` **PASS** (floor 220→227), and **CI green on the PR itself** (run `43938159509`) — the first feature PR fully gated by the new CI.
 - **GitHub Actions (2026-11-16):** **first green CI run recorded** — run `43927485071` on `main` after the hardening merge, conclusion **success** (`compileall` + `ruff` + 220-test suite + 85% coverage gate + `scripts/verify.py`). The suite is now machine-enforced on every push/PR; fixture/pure-unit scope unchanged, not full M4.3 conformance or production security.
+- **Repo norm closeout (2026-11-19, branch `chore/repo-norm-closeout`):** Apache-2.0 `LICENSE` and a PEP 621 `pyproject.toml` manifest added (ruff config absorbed from `ruff.toml`, which is removed); README and navigation synced with merged D-PR2 evidence. Re-verified on the branch: **227/227 tests**, `compileall` clean, `ruff` clean (config now in `pyproject.toml`), coverage **91%** (`--fail-under=85`), `scripts/verify.py` **PASS** (inventory 227/227). Repo hygiene only — no milestone, production or conformance claims change.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
 
@@ -91,7 +92,7 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, merged
 9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — PR #9, merged
 10. [M5.3-C trusted host, approvals, budget and lineage](implementation/m5.3-c-trusted-host.md) — PRs #14–#17, merged
-11. [M5.4 external operation boundary](implementation/m5.4-external-operation-boundary.md) — PR #19 design merged, D-PR1 (PR #20) merged; D-PR2/D-PR3 pending
+11. [M5.4 external operation boundary](implementation/m5.4-external-operation-boundary.md) — PR #19 design merged, D-PR1 (PR #20) and D-PR2 (PR #23) merged; D-PR3 pending
 
 ## Rules for next contributions
 
