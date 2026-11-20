@@ -156,6 +156,11 @@ ROUTES = MappingProxyType({
     'operation.dispatch': {'attempt_id': str, 'target_action': str,
                            'target_resource': str, 'target_payload': dict},
     'operation.reconcile': {'attempt_id': str},
+    'operation.decide': {'attempt_id': str, 'decision_id': str,
+                         'decision': str, 'expires_at': str},
+    'operation.reissue': {'attempt_id': str, 'decision_id': str,
+                          'new_attempt_id': str, 'target_action': str,
+                          'target_resource': str, 'target_payload': dict},
 })
 
 
@@ -234,7 +239,14 @@ class CommandGateway:
                 ).fetchone()
                 if state is None:
                     raise DomainError('REFERENCE_COMPANY_NOT_FOUND')
-                if action != 'report.sources' and state['state'] != 'active':
+                # FLOW-04 (D-PR3): a paused/suspended company has no new
+                # dispatches and no redispatches. Reconciliation is exempted
+                # from this hard gate because it resolves committed reality
+                # without creating new effects; the policy layer remains the
+                # authority (its rules may allow `paused`, and the evaluator
+                # invariant never allows `suspended`/`archived`).
+                if (action not in ('report.sources', 'operation.reconcile')
+                        and state['state'] != 'active'):
                     raise DomainError('AUTH_COMPANY_NOT_ACTIVE')
                 if action == 'task.create':
                     # A new root Task can only be opened from the CEO seat;
@@ -283,6 +295,16 @@ class CommandGateway:
                             raise DomainError('OPERATIONS_NOT_CONFIGURED')
                         result = self._operations.reconcile(
                             actor, p, command['key'])
+                    elif action == 'operation.decide':
+                        if self._operations is None:
+                            raise DomainError('OPERATIONS_NOT_CONFIGURED')
+                        result = self._operations.decide(
+                            actor, p, policy_info, command['key'])
+                    elif action == 'operation.reissue':
+                        if self._operations is None:
+                            raise DomainError('OPERATIONS_NOT_CONFIGURED')
+                        result = self._operations.reissue(
+                            actor, p, policy_info, command['key'])
                     else:
                         result = self._dispatch(action, actor, p, command['key'])
                         if action == 'report.submit':

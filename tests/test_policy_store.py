@@ -611,5 +611,329 @@ class ExternalOperationTests(unittest.TestCase):
                                     (event,)).fetchone()[0]
             self.assertEqual(count,1)
 
+class ReconciliationDecisionTests(unittest.TestCase):
+    """M5.4-D3: human reconciliation decisions, reissue-as-new-attempt, guards."""
+
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.s=Store(Path(self.tmp.name)/'decisions.db',fixture_bootstrap=True)
+        d=self.s.db
+        d.execute('INSERT INTO companies(id,state) VALUES (?,?)',('C','active'))
+        d.execute('INSERT INTO positions VALUES (?,?,?,?)',('C','P','role.engineer@1',None))
+        d.execute('INSERT INTO agents VALUES (?,?,?)',('C','AGT','permanent'))
+        d.execute('INSERT INTO appointments VALUES (?,?,?,?,?)',('C','APT','AGT','P','active'))
+        self.r=SQLitePolicyResolver(self.s)
+        d.execute('INSERT INTO appointment_capabilities VALUES (?,?,?)',('C','APT','cap.dispatch'))
+        d.execute('INSERT INTO company_policy_versions VALUES (?,?,?)',('C','pol@1',1))
+        base={'eligible_roles':['role.engineer@1'],'required_capabilities':['cap.dispatch'],
+              'allowed_task_states':[],'allowed_company_states':['active'],
+              'task_required':False,'approval_required':False,'risk_level':'L2'}
+        for action,cost in (('operation.dispatch',3),('operation.reconcile',0),
+                            ('operation.decide',0),('operation.reissue',3)):
+            d.execute('INSERT INTO company_policy_rules VALUES (?,?,?,?,?)',
+                      ('C','pol@1',action,json.dumps({**base,'action':action}),cost))
+        for gid,action,resource in (('G-EXT','operation.dispatch','external:publish'),
+                                    ('G-EXT-B','operation.dispatch','other'),
+                                    ('G-REC','operation.reconcile','company:C'),
+                                    ('G-DEC','operation.decide','company:C'),
+                                    ('G-REI','operation.reissue','external:publish'),
+                                    ('G-REI-B','operation.reissue','other')):
+            d.execute('INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)',
+                      ('C',gid,'APT',None,action,resource,
+                       (NOW+timedelta(hours=1)).isoformat(),5,1))
+        d.execute('INSERT INTO policy_budgets VALUES (?,?)',('C',10))
+        self.adapter=ScriptedExternalAdapter()
+        self.manager=ExternalOperationManager(self.s,self.adapter)
+        self.actor=Actor('C','AGT','APT')
+        self.payload={'attempt_id':'ATT-1','target_action':'external.publish',
+                      'target_resource':'external:publish','target_payload':{'note':'x'}}
+
+    def tearDown(self):
+        self.s.close()
+        self.tmp.cleanup()
+
+    def _dispatch(self,payload,key='k1'):
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.dispatch',payload)
+            return self.manager.dispatch(self.actor,payload,info,key)
+
+    def _reconcile(self,attempt_id='ATT-1',key='rec-1'):
+        with self.s.tx():
+            return self.manager.reconcile(self.actor,{'attempt_id':attempt_id},key)
+
+    def _unresolved(self,key='d1'):
+        self.adapter.script('external.publish','unknown')
+        self._dispatch(self.payload,key=key)
+        return self._reconcile(key='rec-'+key)
+
+    def _decide(self,decision='reissue',decision_id='DEC-1',attempt_id='ATT-1',
+                key='dec-1',expires=None):
+        payload={'attempt_id':attempt_id,'decision_id':decision_id,'decision':decision,
+                 'expires_at':expires or (NOW+timedelta(hours=1)).isoformat()}
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.decide',payload)
+            return self.manager.decide(self.actor,payload,info,key)
+
+    def _reissue(self,decision_id='DEC-1',new_attempt_id='ATT-2',key='rei-1',
+                 attempt_id='ATT-1'):
+        payload={'attempt_id':attempt_id,'decision_id':decision_id,
+                 'new_attempt_id':new_attempt_id,'target_action':'external.publish',
+                 'target_resource':'external:publish','target_payload':{'note':'x'}}
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.reissue',payload)
+            return self.manager.reissue(self.actor,payload,info,key)
+
+    def _insert_decision(self,decision_id='DEC-X',attempt_id='ATT-1',decision='reissue',
+                         expires=None):
+        """Trusted fixture write; bypasses the gateway-time decide validations."""
+        self.s.db.execute('''INSERT INTO operation_reconciliations VALUES
+            (?,?,?,?,?,?,?,NULL,?)''',
+            ('C',decision_id,attempt_id,decision,'APT','pol@1',
+             expires or (NOW+timedelta(hours=1)).isoformat(),NOW.isoformat()))
+
+    def attempts(self):
+        return self.s.db.execute('SELECT count(*) FROM operation_attempts').fetchone()[0]
+
+    def budget(self):
+        return self.s.db.execute(
+            "SELECT remaining_units FROM policy_budgets WHERE company_id='C'").fetchone()['remaining_units']
+
+    def state_of(self,attempt_id):
+        return self.s.db.execute(
+            '''SELECT state FROM operation_attempts WHERE company_id='C' AND id=?''',
+            (attempt_id,)).fetchone()['state']
+
+    def test_decide_records_reissue_provenance(self):
+        self._unresolved()
+        result=self._decide()
+        self.assertEqual(result,{'decision_id':'DEC-1','attempt_id':'ATT-1','decision':'reissue'})
+        row=self.s.db.execute("SELECT * FROM operation_reconciliations WHERE id='DEC-1'").fetchone()
+        self.assertEqual(row['decision'],'reissue')
+        self.assertEqual(row['decided_by_appointment_id'],'APT')
+        self.assertEqual(row['policy_version'],'pol@1')
+        self.assertIsNone(row['consumed_by_attempt_id'])
+        count=self.s.db.execute("SELECT count(*) FROM audit_events WHERE event_type='operation.decision_recorded'").fetchone()[0]
+        self.assertEqual(count,1)
+
+    def test_decide_records_abandon_provenance(self):
+        self._unresolved()
+        result=self._decide(decision='abandon',decision_id='DEC-A')
+        self.assertEqual(result['decision'],'abandon')
+
+    def test_decide_requires_unresolved_state(self):
+        self.adapter.script('external.publish','unknown')
+        self._dispatch(self.payload,key='d-unknown')
+        with self.assertRaises(DomainError) as caught:
+            self._decide()
+        self.assertEqual(caught.exception.code,'OPERATION_DECIDE_NOT_ALLOWED')
+        self.adapter.script('external.publish','succeeded')
+        self._dispatch({'attempt_id':'ATT-OK','target_action':'external.publish',
+                        'target_resource':'external:publish','target_payload':{'n':0}},
+                       key='d-ok')
+        with self.assertRaises(DomainError) as caught:
+            self._decide(decision_id='DEC-OK',attempt_id='ATT-OK')
+        self.assertEqual(caught.exception.code,'OPERATION_DECIDE_NOT_ALLOWED')
+
+    def test_decide_rejects_invalid_decision_value(self):
+        self._unresolved()
+        with self.assertRaises(DomainError) as caught:
+            self._decide(decision='retry')
+        self.assertEqual(caught.exception.code,'OPERATION_DECISION_INVALID')
+
+    def test_decide_rejects_past_expiry(self):
+        self._unresolved()
+        with self.assertRaises(DomainError) as caught:
+            self._decide(expires=(NOW-timedelta(minutes=1)).isoformat())
+        self.assertEqual(caught.exception.code,'OPERATION_DECISION_EXPIRED')
+
+    def test_decide_rejects_naive_expiry(self):
+        self._unresolved()
+        naive=(NOW+timedelta(hours=1)).replace(tzinfo=None).isoformat()
+        with self.assertRaises(DomainError) as caught:
+            self._decide(expires=naive)
+        self.assertEqual(caught.exception.code,'OPERATION_DECISION_INVALID_EXPIRY')
+
+    def test_decide_rejects_second_pending_decision(self):
+        self._unresolved()
+        self._decide()
+        with self.assertRaises(DomainError) as caught:
+            self._decide(decision_id='DEC-2')
+        self.assertEqual(caught.exception.code,'OPERATION_DECISION_ALREADY_PENDING')
+
+    def test_decide_rejects_after_abandon(self):
+        self._unresolved()
+        self._decide(decision='abandon',decision_id='DEC-A')
+        with self.assertRaises(DomainError) as caught:
+            self._decide(decision_id='DEC-2')
+        self.assertEqual(caught.exception.code,'OPERATION_ATTEMPT_ABANDONED')
+
+    def test_decide_rejects_duplicate_decision_id(self):
+        self._unresolved()
+        self._decide()
+        self.adapter.script('external.publish','unknown')
+        self._dispatch({'attempt_id':'ATT-B','target_action':'external.publish',
+                        'target_resource':'other','target_payload':{'n':0}},key='d-b')
+        self._reconcile(attempt_id='ATT-B',key='rec-b')
+        with self.assertRaises(DomainError) as caught:
+            self._decide(attempt_id='ATT-B')
+        self.assertEqual(caught.exception.code,'CONFLICT_DECISION_EXISTS')
+
+    def test_reissue_creates_new_attempt_and_clears_guard(self):
+        self._unresolved()
+        self.assertEqual(self.budget(),7)
+        self._decide()
+        self.adapter.script('external.publish','succeeded')
+        result=self._reissue()
+        self.assertEqual(result['state'],'succeeded')
+        self.assertEqual(result['attempt_id'],'ATT-2')
+        self.assertEqual(self.state_of('ATT-1'),'unresolved')
+        self.assertEqual(self.state_of('ATT-2'),'succeeded')
+        self.assertEqual(self.attempts(),2)
+        consumed=self.s.db.execute("SELECT consumed_by_attempt_id FROM operation_reconciliations WHERE id='DEC-1'").fetchone()['consumed_by_attempt_id']
+        self.assertEqual(consumed,'ATT-2')
+        consumed_audits=self.s.db.execute("SELECT count(*) FROM audit_events WHERE event_type='operation.reissue_decision_consumed'").fetchone()[0]
+        self.assertEqual(consumed_audits,1)
+        # The original hold stays (unresolved never settles); the reissue's
+        # own reservation is consumed by the succeeded new attempt.
+        self.assertEqual(self.budget(),4)
+
+    def test_reissue_failed_refunds_new_reservation_only(self):
+        self._unresolved()
+        self._decide()
+        self.adapter.script('external.publish','failed')
+        result=self._reissue()
+        self.assertEqual(result['state'],'failed')
+        # Original 3 stay held (unresolved); the reissue reservation refunds.
+        self.assertEqual(self.budget(),7)
+        refunded=self.s.db.execute("SELECT count(*) FROM audit_events WHERE event_type='operation.cost_refunded'").fetchone()[0]
+        self.assertEqual(refunded,1)
+
+    def test_reissue_requires_pending_decision(self):
+        self._unresolved()
+        with self.assertRaises(DomainError) as caught:
+            self._reissue()
+        self.assertEqual(caught.exception.code,'OPERATION_DECISION_NOT_PENDING')
+        self.assertEqual(self.attempts(),1)
+
+    def test_reissue_rejects_decision_of_other_attempt(self):
+        self._unresolved()
+        self.adapter.script('external.publish','unknown')
+        self._dispatch({'attempt_id':'ATT-B','target_action':'external.publish',
+                        'target_resource':'other','target_payload':{'n':0}},key='d-b')
+        self._reconcile(attempt_id='ATT-B',key='rec-b')
+        payload={'attempt_id':'ATT-B','decision_id':'DEC-1','new_attempt_id':'ATT-C',
+                 'target_action':'external.publish','target_resource':'other',
+                 'target_payload':{'n':0}}
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.reissue',payload)
+            with self.assertRaises(DomainError) as caught:
+                self.manager.reissue(self.actor,payload,info,'rei-mismatch')
+        self.assertEqual(caught.exception.code,'OPERATION_DECISION_NOT_PENDING')
+
+    def test_reissue_rejects_consumed_decision(self):
+        self._unresolved()
+        self._decide()
+        self.adapter.script('external.publish','succeeded')
+        self._reissue()
+        with self.assertRaises(DomainError) as caught:
+            self._reissue(key='rei-again')
+        self.assertEqual(caught.exception.code,'OPERATION_DECISION_NOT_PENDING')
+        self.assertEqual(self.attempts(),2)
+
+    def test_reissue_rejects_expired_decision(self):
+        self._unresolved()
+        self._insert_decision(decision_id='DEC-LATE',expires=(NOW-timedelta(minutes=1)).isoformat())
+        self.adapter.script('external.publish','succeeded')
+        payload={'attempt_id':'ATT-1','decision_id':'DEC-LATE','new_attempt_id':'ATT-2',
+                 'target_action':'external.publish','target_resource':'external:publish',
+                 'target_payload':{'note':'x'}}
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.reissue',payload)
+            with self.assertRaises(DomainError) as caught:
+                self.manager.reissue(self.actor,payload,info,'rei-late')
+        self.assertEqual(caught.exception.code,'OPERATION_DECISION_EXPIRED')
+        pending=self.s.db.execute("SELECT consumed_by_attempt_id FROM operation_reconciliations WHERE id='DEC-LATE'").fetchone()['consumed_by_attempt_id']
+        self.assertIsNone(pending)
+
+    def test_reissue_rejects_guard_key_mismatch(self):
+        self._unresolved()
+        self._decide()
+        payload={'attempt_id':'ATT-1','decision_id':'DEC-1','new_attempt_id':'ATT-2',
+                 'target_action':'external.publish','target_resource':'external:publish',
+                 'target_payload':{'note':'changed'}}
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.reissue',payload)
+            with self.assertRaises(DomainError) as caught:
+                self.manager.reissue(self.actor,payload,info,'rei-diff')
+        self.assertEqual(caught.exception.code,'OPERATION_REISSUE_GUARD_MISMATCH')
+        pending=self.s.db.execute("SELECT consumed_by_attempt_id FROM operation_reconciliations WHERE id='DEC-1'").fetchone()['consumed_by_attempt_id']
+        self.assertIsNone(pending)
+        self.assertEqual(self.attempts(),1)
+
+    def test_reissue_rejects_non_unresolved_attempt(self):
+        self.adapter.script('external.publish','succeeded')
+        self._dispatch(self.payload,key='d-ok')
+        self._insert_decision(decision_id='DEC-S',attempt_id='ATT-1')
+        payload={'attempt_id':'ATT-1','decision_id':'DEC-S','new_attempt_id':'ATT-2',
+                 'target_action':'external.publish','target_resource':'external:publish',
+                 'target_payload':{'note':'x'}}
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.reissue',payload)
+            with self.assertRaises(DomainError) as caught:
+                self.manager.reissue(self.actor,payload,info,'rei-s')
+        self.assertEqual(caught.exception.code,'OPERATION_REISSUE_NOT_ALLOWED')
+
+    def test_abandon_keeps_guard_blocked(self):
+        self._unresolved()
+        self._decide(decision='abandon',decision_id='DEC-A')
+        with self.assertRaises(DomainError) as caught:
+            self._dispatch({'attempt_id':'ATT-2','target_action':'external.publish',
+                            'target_resource':'external:publish','target_payload':{'note':'x'}},
+                           key='retry')
+        self.assertEqual(caught.exception.code,'OPERATION_UNRESOLVED_ATTEMPT_EXISTS')
+        self.assertEqual(self.attempts(),1)
+
+    def test_consumed_reissue_releases_guard_only_via_new_attempt(self):
+        # After a consumed reissue decision the OLD attempt no longer blocks
+        # its guard key, but the NEW attempt re-blocks it while unresolved.
+        self._unresolved()
+        self._decide()
+        self.adapter.script('external.publish','unknown')
+        result=self._reissue()
+        self.assertEqual(result['state'],'unknown')
+        self.assertEqual(self.state_of('ATT-1'),'unresolved')
+        with self.assertRaises(DomainError) as caught:
+            self._dispatch({'attempt_id':'ATT-3','target_action':'external.publish',
+                            'target_resource':'external:publish','target_payload':{'note':'x'}},
+                           key='retry-2')
+        self.assertEqual(caught.exception.code,'OPERATION_UNRESOLVED_ATTEMPT_EXISTS')
+        # The new attempt enters the same human-gated cycle: reconcile to
+        # unresolved, decide again; the provenance chain stays append-only.
+        self._reconcile(attempt_id='ATT-2',key='rec-2')
+        self._decide(decision_id='DEC-2',attempt_id='ATT-2')
+        self.adapter.script('external.publish','succeeded')
+        result=self._reissue(decision_id='DEC-2',new_attempt_id='ATT-4',key='rei-2',
+                             attempt_id='ATT-2')
+        self.assertEqual(result['state'],'succeeded')
+        self.assertEqual(self.attempts(),3)
+        self.assertEqual(self.state_of('ATT-2'),'unresolved')
+        self.assertEqual(self.state_of('ATT-4'),'succeeded')
+
+    def test_decision_provenance_is_immutable(self):
+        self._unresolved()
+        self._decide()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute("UPDATE operation_reconciliations SET decision='abandon' WHERE id='DEC-1'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute("UPDATE operation_reconciliations SET attempt_id='ATT-9' WHERE id='DEC-1'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute("DELETE FROM operation_reconciliations WHERE id='DEC-1'")
+        self.adapter.script('external.publish','succeeded')
+        self._reissue()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute("UPDATE operation_reconciliations SET consumed_by_attempt_id='ATT-9' WHERE id='DEC-1'")
+        row=self.s.db.execute("SELECT consumed_by_attempt_id FROM operation_reconciliations WHERE id='DEC-1'").fetchone()
+        self.assertEqual(row['consumed_by_attempt_id'],'ATT-2')
+
 if __name__ == '__main__':
     unittest.main()

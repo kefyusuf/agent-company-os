@@ -51,12 +51,12 @@ class PolicyGatewayTests(unittest.TestCase):
                 'key':key,'payload':payload}
 
     def set_rule(self,action,role='core.ceo@1',task_required=True,states=None,
-                 capabilities=None,approval=False,risk='L1',cost=0):
+                 capabilities=None,approval=False,risk='L1',cost=0,company_states=None):
         if states is None:
             states=['draft']
         value={'action':action,'eligible_roles':[role],
                'allowed_task_states':states,
-               'allowed_company_states':['active'],
+               'allowed_company_states':company_states or ['active'],
                'task_required':task_required,
                'required_capabilities':capabilities or [],
                'approval_required':approval,'risk_level':risk}
@@ -664,6 +664,119 @@ class PolicyGatewayTests(unittest.TestCase):
             'SELECT remaining_units FROM policy_budgets WHERE company_id=?',
             ('C-A',)).fetchone()['remaining_units'],8)
         self.assertEqual(gateway.execute(self.ceo,rec_cmd),result)
+
+    def _decision_gateway(self,adapter):
+        gateway=PolicyCommandGateway(self.store,self.host,self.resolver,
+            operations=ExternalOperationManager(self.store,adapter))
+        self.store.db.execute('INSERT INTO policy_budgets VALUES (?,?)',('C-A',10))
+        self.set_rule('operation.dispatch',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=2)
+        self.set_rule('operation.reconcile',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=0,
+                      company_states=['active','paused'])
+        self.set_rule('operation.decide',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=0)
+        self.set_rule('operation.reissue',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=2)
+        self.grant('G-EXT2','APT-CEO',None,'operation.dispatch','external:demo')
+        self.grant('G-REC2','APT-CEO',None,'operation.reconcile','company:C-A')
+        self.grant('G-DEC2','APT-CEO',None,'operation.decide','company:C-A')
+        self.grant('G-REI2','APT-CEO',None,'operation.reissue','external:demo')
+        self.store.db.execute('UPDATE policy_grants SET max_cost_units=5 WHERE company_id=?',
+                              ('C-A',))
+        return gateway
+
+    def _dispatch_cmd(self,attempt_id,key):
+        return self.cmd('operation.dispatch',
+            {'attempt_id':attempt_id,'target_action':'external.demo',
+             'target_resource':'external:demo','target_payload':{'x':1}},key=key)
+
+    def _unresolved_via_gateway(self,gateway,adapter,attempt_id,dispatch_key,
+                                reconcile_key):
+        self.assertEqual(gateway.execute(self.ceo,
+            self._dispatch_cmd(attempt_id,dispatch_key))['state'],'unknown')
+        rec_cmd=self.cmd('operation.reconcile',{'attempt_id':attempt_id},
+            key=reconcile_key)
+        self.assertEqual(gateway.execute(self.ceo,rec_cmd)['state'],'unresolved')
+        return rec_cmd
+
+    def test_operation_decide_and_reissue_end_to_end(self):
+        adapter=ScriptedExternalAdapter()
+        adapter.script('external.demo','unknown')
+        gateway=self._decision_gateway(adapter)
+        self._unresolved_via_gateway(gateway,adapter,'ATT-G3','op-3','rec-3')
+        decide_cmd=self.cmd('operation.decide',
+            {'attempt_id':'ATT-G3','decision_id':'DEC-G1','decision':'reissue',
+             'expires_at':(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()},
+            key='dec-1')
+        self.assertEqual(gateway.execute(self.ceo,decide_cmd)['decision'],'reissue')
+        adapter.script('external.demo','succeeded')
+        reissue_cmd=self.cmd('operation.reissue',
+            {'attempt_id':'ATT-G3','decision_id':'DEC-G1','new_attempt_id':'ATT-G4',
+             'target_action':'external.demo','target_resource':'external:demo',
+             'target_payload':{'x':1}},key='rei-1')
+        result=gateway.execute(self.ceo,reissue_cmd)
+        self.assertEqual(result['state'],'succeeded')
+        self.assertEqual(result['attempt_id'],'ATT-G4')
+        rows=self.store.db.execute('''SELECT id,state FROM operation_attempts
+            WHERE company_id='C-A' ORDER BY id''').fetchall()
+        self.assertEqual([(r['id'],r['state']) for r in rows],
+            [('ATT-G3','unresolved'),('ATT-G4','succeeded')])
+        # Original hold (2) stays; the reissue reservation (2) is consumed.
+        self.assertEqual(self.store.db.execute(
+            'SELECT remaining_units FROM policy_budgets WHERE company_id=?',
+            ('C-A',)).fetchone()['remaining_units'],6)
+        # Both new commands receipt; replays return the committed results
+        # without recording decisions or dispatching again.
+        self.assertEqual(gateway.execute(self.ceo,decide_cmd)['decision'],'reissue')
+        self.assertEqual(gateway.execute(self.ceo,reissue_cmd),result)
+        self.assertEqual(self.store.db.execute(
+            'SELECT count(*) FROM operation_attempts').fetchone()[0],2)
+        self.assertEqual(self.store.db.execute(
+            'SELECT count(*) FROM operation_reconciliations').fetchone()[0],1)
+
+    def test_paused_company_denies_dispatch_and_reissue_allows_reconcile(self):
+        adapter=ScriptedExternalAdapter()
+        adapter.script('external.demo','unknown')
+        gateway=self._decision_gateway(adapter)
+        rec_cmd=self._unresolved_via_gateway(gateway,adapter,'ATT-P1','op-p','rec-p')
+        self.store.db.execute("UPDATE companies SET state='paused' WHERE id='C-A'")
+        # No new dispatches, no redispatches, no new decisions while paused.
+        self.assert_denied('AUTH_COMPANY_NOT_ACTIVE',lambda:gateway.execute(
+            self.ceo,self._dispatch_cmd('ATT-P2','op-p2')))
+        reissue_cmd=self.cmd('operation.reissue',
+            {'attempt_id':'ATT-P1','decision_id':'DEC-P1','new_attempt_id':'ATT-P3',
+             'target_action':'external.demo','target_resource':'external:demo',
+             'target_payload':{'x':1}},key='rei-p')
+        self.assert_denied('AUTH_COMPANY_NOT_ACTIVE',lambda:gateway.execute(
+            self.ceo,reissue_cmd))
+        decide_cmd=self.cmd('operation.decide',
+            {'attempt_id':'ATT-P1','decision_id':'DEC-P1','decision':'reissue',
+             'expires_at':(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()},
+            key='dec-p')
+        self.assert_denied('AUTH_COMPANY_NOT_ACTIVE',lambda:gateway.execute(
+            self.ceo,decide_cmd))
+        # Reconciliation resolves committed reality and stays reachable:
+        # an exact replay of the committed reconcile re-authorizes under the
+        # paused-company rule and returns the committed result.
+        self.assertEqual(gateway.execute(self.ceo,rec_cmd)['state'],'unresolved')
+        self.assertEqual(self.store.db.execute(
+            "SELECT state FROM operation_attempts WHERE company_id='C-A' AND id='ATT-P1'"
+        ).fetchone()['state'],'unresolved')
+        self.assertEqual(self.store.db.execute(
+            'SELECT count(*) FROM operation_attempts').fetchone()[0],1)
+
+    def test_suspended_company_denies_reconcile(self):
+        adapter=ScriptedExternalAdapter()
+        adapter.script('external.demo','unknown')
+        gateway=self._decision_gateway(adapter)
+        self._unresolved_via_gateway(gateway,adapter,'ATT-S1','op-s','rec-s')
+        self.store.db.execute("UPDATE companies SET state='suspended' WHERE id='C-A'")
+        # The evaluator invariant never allows suspended/archived company
+        # states, so the reconcile exemption cannot become a side door.
+        self.assert_denied('AUTH_COMPANY_STATE',lambda:gateway.execute(
+            self.ceo,self.cmd('operation.reconcile',{'attempt_id':'ATT-S1'},
+                              key='rec-s2')))
 
 if __name__ == '__main__':
     unittest.main()
