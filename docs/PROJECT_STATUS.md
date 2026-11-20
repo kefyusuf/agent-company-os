@@ -49,7 +49,8 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged (PR #7)**; 49 exact-source local tests, not gateway-integrated |
 | M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **Merged (PR #9)**; 52 new tests; full checkout verified 193/193 (2026-11-14) |
 | M5.3-C | Trusted host attestation, one-time approvals, budget reservation, review lineage | **Implemented (PRs #14–#17)**; fixture-grade attestation, **NOT production authentication** |
-| M5.4 | External operation boundary: attempt ledger + adapter seam | **D-PR1 (PR #20), D-PR2 (PR #23) and D-PR3 (PR #27) merged** — external operation boundary fixture-complete; no real effects, production NO-GO unchanged; next gate is a real transport review |
+| M5.4 | External operation boundary: attempt ledger + adapter seam | **D-PR1 (PR #20), D-PR2 (PR #23) and D-PR3 (PR #27) merged** — external operation boundary fixture-complete; no real effects, production NO-GO unchanged |
+| M5.5 | Real transport review (pre-provider gate) | **Design + owner-approved decisions recorded (2026-11-20, this change)**; implementation not started; no real effects, production NO-GO unchanged |
 
 ## Verification evidence and limits
 
@@ -72,6 +73,7 @@ Observed in the local environment:
 - **Repo norm closeout merged (2026-11-19, PR #25):** the closeout above merged into `main` (merge commit `9ef930a`) with **CI green on the PR itself** (run `44601509822`, `verify` PASS in 50s: `compileall` + `ruff` + 227-test suite + 85% coverage gate + `scripts/verify.py`). Suite remains 227/227; inventory floor unchanged; production/conformance NO-GO statements unchanged. Mimosa `store.py:116/120/121/124` findings re-confirmed as the SECURITY.md registered false positive in the PR body before push, with owner confirmation per the ask-mode norm. Merged remote branches retained — cleanup deferred by owner decision (2026-11-19).
 - **M5.4 D-PR3 (2026-11-20, branch `feat/m5.4-d3-human-decisions`):** human reconciliation decisions (`operation_reconciliations`, `reissue|abandon`), reissue-as-new-attempt consuming the decision atomically, FIX-10 guard refinement (consumed reissue releases; abandon blocks forever), and FLOW-04 pause split (only `operation.reconcile` exempt from the active-company gate; evaluator invariant keeps `suspended`/`archived` denied). 23 new tests; suite **250/250**; `compileall` clean; `ruff` clean; coverage **90%** (`--fail-under=85`); `scripts/verify.py` **PASS** (floor **227 → 250**, monotonic). Implementation refinements recorded in the D-PR3 notes of the M5.4 doc. No real provider, no network, production NO-GO unchanged.
 - **M5.4 D-PR3 merged (2026-11-20, PR #27):** the slice above merged into `main` (merge commit `679c389`) with **CI green on the PR itself** (run `44768465944`, `verify` PASS in 41s: `compileall` + `ruff` + 250-test suite + 85% coverage gate + `scripts/verify.py` at floor 250). The M5.4 D series is complete: the external operation boundary is fixture-complete; external side effects remain NO-GO until a real transport review. Mimosa findings re-confirmed as the SECURITY.md registered false positives in the PR body before push (store.py savepoints; test-helper dict literal), with owner per-write confirmations recorded 2026-11-20.
+- **M5.5 transport review drafted (2026-11-20, branch `docs/m5.5-transport-review-draft`):** pre-provider gate document — threat-model delta (T1–T10), gate checklist (G-T1–G-T10) and proposed T-PR0–T-PR3 ordering. **Six decisions approved by the owner in conversation (2026-11-20)**: trusted-host recovery command (no background supervisor), status-query retry allowed but dispatch retries forbidden at every layer, 429 maps to `unknown`, first real provider is a read-only family, contract tests on a local fake HTTP server (live smoke only behind recorded owner approval), and M5.5 numbering. Docs-only change: suite 250/250 re-run, floor unchanged; NO-GO statements unchanged — no transport code exists.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
 
@@ -96,7 +98,8 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, merged
 9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — PR #9, merged
 10. [M5.3-C trusted host, approvals, budget and lineage](implementation/m5.3-c-trusted-host.md) — PRs #14–#17, merged
-11. [M5.4 external operation boundary](implementation/m5.4-external-operation-boundary.md) — PR #19 design merged; D-PR1 (PR #20), D-PR2 (PR #23) and D-PR3 (PR #27) merged; boundary fixture-complete, next gate is a real transport review
+11. [M5.4 external operation boundary](implementation/m5.4-external-operation-boundary.md) — PR #19 design merged; D-PR1 (PR #20), D-PR2 (PR #23) and D-PR3 (PR #27) merged; boundary fixture-complete
+12. [M5.5 real transport review](implementation/m5.5-transport-review.md) — pre-provider gate: threat-model delta, G-T1–G-T10 checklist, owner-approved decisions (2026-11-20); implementation not started
 
 ## Rules for next contributions
 
