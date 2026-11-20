@@ -192,6 +192,8 @@ TASK_FIELD = {
     'report.sources': 'report_lookup',
     'operation.dispatch': None,
     'operation.reconcile': None,
+    'operation.decide': None,
+    'operation.reissue': None,
 }
 
 
@@ -357,6 +359,10 @@ class SQLitePolicyResolver:
         task_id=task['id'] if task is not None else None
         if action == 'operation.dispatch':
             # The grant must scope the exact external resource, e.g. external:publish.
+            resource_id = payload['target_resource']
+        elif action == 'operation.reissue':
+            # Reissue creates a NEW external attempt: the fresh authorization
+            # binds to the same exact-resource discipline as first dispatch.
             resource_id = payload['target_resource']
         else:
             resource_id='task:'+task_id if task_id else 'company:'+actor.company_id

@@ -1,4 +1,4 @@
-"""M5.4-D1: external operation attempt ledger and the scripted adapter seam.
+"""M5.4-D1/D2/D3: external operation attempt ledger and the scripted adapter seam.
 
 NOT a real provider integration. The only adapter implemented is a
 deterministic test fake whose outcomes come from a host-side script. Dispatch
@@ -11,7 +11,18 @@ exists for.
 FIX-10 no-blind-redispatch is enforced from day one: a new attempt whose
 stable guard key (company + target action + resource + target payload,
 excluding the attempt id) matches an `unknown`/`reconciling`/`unresolved`
-attempt is denied before authorization is re-run.
+attempt is denied before authorization is re-run. D-PR3 opens exactly one
+release valve: an `unresolved` attempt whose recorded human decision is
+`reissue` AND already consumed by a created attempt no longer blocks.
+`abandon` decisions are never consumed, so an abandoned ambiguity blocks its
+guard key forever.
+
+D-PR3 human decisions live in `operation_reconciliations` (owner decision:
+dedicated table — approval payload binding does not map to "decide what an
+ambiguous external effect means"). Recording a decision and executing a
+reissue are separate trusted-host commands: record first, then act, both
+fail closed. Reissue always creates a NEW attempt with fresh authorization;
+the old attempt stays `unresolved` forever (append-only lineage).
 """
 from __future__ import annotations
 
@@ -60,6 +71,43 @@ BEGIN
        OR NEW.reserved_cost_units IS NOT OLD.reserved_cost_units
        OR NEW.guard_key IS NOT OLD.guard_key;
 END;
+-- D-PR3: dedicated human reconciliation decisions (owner-approved design).
+-- Provenance is append-only; exactly one consumption may bind a `reissue`
+-- decision to the new attempt it authorizes.
+CREATE TABLE IF NOT EXISTS operation_reconciliations (
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK(decision IN ('reissue','abandon')),
+    decided_by_appointment_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_by_attempt_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(company_id,id),
+    FOREIGN KEY(company_id,attempt_id)
+        REFERENCES operation_attempts(company_id,id),
+    FOREIGN KEY(company_id,decided_by_appointment_id)
+        REFERENCES appointments(company_id,id)
+);
+CREATE TRIGGER IF NOT EXISTS immutable_reconciliation_decision
+BEFORE UPDATE ON operation_reconciliations
+BEGIN
+    SELECT RAISE(ABORT,'IMMUTABLE_RECONCILIATION_DECISION')
+    WHERE NEW.attempt_id IS NOT OLD.attempt_id
+       OR NEW.decision IS NOT OLD.decision
+       OR NEW.decided_by_appointment_id IS NOT OLD.decided_by_appointment_id
+       OR NEW.policy_version IS NOT OLD.policy_version
+       OR NEW.expires_at IS NOT OLD.expires_at
+       OR NEW.created_at IS NOT OLD.created_at
+       OR (OLD.consumed_by_attempt_id IS NOT NULL
+           AND NEW.consumed_by_attempt_id IS NOT OLD.consumed_by_attempt_id);
+END;
+CREATE TRIGGER IF NOT EXISTS deny_reconciliation_decision_delete
+BEFORE DELETE ON operation_reconciliations
+BEGIN
+    SELECT RAISE(ABORT,'IMMUTABLE_RECONCILIATION_DECISION');
+END;
 """
 
 ATTEMPT_TRANSITIONS = frozenset({
@@ -75,10 +123,22 @@ ATTEMPT_TRANSITIONS = frozenset({
 })
 
 OUTCOMES = frozenset({'succeeded', 'failed', 'unknown'})
+DECISIONS = frozenset({'reissue', 'abandon'})
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _guard_key(company: str, target_action: str, target_resource: str,
+               target_payload: dict) -> str:
+    """FIX-10 stable redispatch guard: attempt identity excluded by design."""
+    return hashlib.sha256(canonical({
+        'company_id': company,
+        'target_action': target_action,
+        'target_resource': target_resource,
+        'target_payload': target_payload,
+    }).encode('utf-8')).hexdigest()
 
 
 class ScriptedExternalAdapter:
@@ -181,19 +241,25 @@ class ExternalOperationManager:
         company = actor.company_id
         attempt_id = payload['attempt_id']
         intent = policy_info['intent']
-        guard_key = hashlib.sha256(canonical({
-            'company_id': company,
-            'target_action': payload['target_action'],
-            'target_resource': payload['target_resource'],
-            'target_payload': payload['target_payload'],
-        }).encode('utf-8')).hexdigest()
+        guard_key = _guard_key(company, payload['target_action'],
+                               payload['target_resource'], payload['target_payload'])
         if self.store.db.execute(
                 'SELECT 1 FROM operation_attempts WHERE company_id=? AND id=?',
                 (company, attempt_id)).fetchone() is not None:
             raise DomainError('CONFLICT_ATTEMPT_EXISTS')
+        # FIX-10: an unresolved ambiguity blocks its guard key until a recorded
+        # human `reissue` decision has been consumed by creating a new attempt.
+        # `abandon` is never consumable, so it blocks forever (D-PR3).
         prior = self.store.db.execute(
-            '''SELECT id FROM operation_attempts WHERE company_id=? AND guard_key=?
-               AND state IN ('unknown','reconciling','unresolved') LIMIT 1''',
+            '''SELECT a.id FROM operation_attempts a
+               WHERE a.company_id=? AND a.guard_key=?
+                 AND a.state IN ('unknown','reconciling','unresolved')
+                 AND NOT EXISTS (
+                     SELECT 1 FROM operation_reconciliations d
+                     WHERE d.company_id=a.company_id AND d.attempt_id=a.id
+                       AND d.decision='reissue'
+                       AND d.consumed_by_attempt_id IS NOT NULL)
+               LIMIT 1''',
             (company, guard_key)).fetchone()
         if prior is not None:
             raise DomainError('OPERATION_UNRESOLVED_ATTEMPT_EXISTS')
@@ -290,3 +356,141 @@ class ExternalOperationManager:
                               'units': attempt['reserved_cost_units']})
         # succeeded: held cost is now consumed; unresolved: still held (D-PR3 settles).
         return {'attempt_id': attempt_id, 'state': outcome}
+
+    def decide(self, actor: Actor, payload: dict, policy_info: dict,
+               receipt_key: str) -> dict:
+        """Record the human reconciliation decision for one `unresolved` attempt.
+
+        The gateway re-enforces the role-gated `operation.decide` policy before
+        this runs (owner decision #2: trusted-host command, audited). This
+        method only records provenance — it never dispatches or mutates the
+        attempt. Decisions are one-shot provenance rows: `abandon` is final and
+        keeps the FIX-10 guard blocked forever; a pending (unconsumed)
+        `reissue` decision excludes further decisions until it is consumed.
+        """
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        company = actor.company_id
+        attempt_id = payload['attempt_id']
+        decision = payload['decision']
+        if decision not in DECISIONS:
+            raise DomainError('OPERATION_DECISION_INVALID')
+        attempt = self.store.db.execute(
+            '''SELECT state FROM operation_attempts WHERE company_id=? AND id=?''',
+            (company, attempt_id)).fetchone()
+        if attempt is None:
+            raise DomainError('REFERENCE_ATTEMPT_NOT_FOUND')
+        if attempt['state'] != 'unresolved':
+            # Decisions exist only for the terminal ambiguous state; anything
+            # else already has settled evidence or is still reconciling.
+            raise DomainError('OPERATION_DECIDE_NOT_ALLOWED')
+        expires_at = self._expiry(payload['expires_at'])
+        if expires_at <= datetime.now(timezone.utc):
+            # A decision that can never authorize a reissue is not provenance.
+            raise DomainError('OPERATION_DECISION_EXPIRED')
+        if self.store.db.execute(
+                '''SELECT 1 FROM operation_reconciliations
+                   WHERE company_id=? AND attempt_id=? AND decision='abandon' ''',
+                (company, attempt_id)).fetchone() is not None:
+            raise DomainError('OPERATION_ATTEMPT_ABANDONED')
+        if self.store.db.execute(
+                '''SELECT 1 FROM operation_reconciliations
+                   WHERE company_id=? AND attempt_id=? AND decision='reissue'
+                     AND consumed_by_attempt_id IS NULL''',
+                (company, attempt_id)).fetchone() is not None:
+            raise DomainError('OPERATION_DECISION_ALREADY_PENDING')
+        decision_id = payload['decision_id']
+        if self.store.db.execute(
+                'SELECT 1 FROM operation_reconciliations WHERE company_id=? AND id=?',
+                (company, decision_id)).fetchone() is not None:
+            raise DomainError('CONFLICT_DECISION_EXISTS')
+        self.store.db.execute('''INSERT INTO operation_reconciliations
+            (company_id,id,attempt_id,decision,decided_by_appointment_id,
+             policy_version,expires_at,consumed_by_attempt_id,created_at)
+            VALUES (?,?,?,?,?,?,?,NULL,?)''',
+            (company, decision_id, attempt_id, decision, actor.appointment_id,
+             policy_info['policy_version'], expires_at.isoformat(), _now()))
+        actor_ref = f'agent:{actor.agent_id}@{actor.appointment_id}'
+        self.store.audit(company, 'operation_attempt', attempt_id,
+                         'operation.decision_recorded', actor_ref,
+                         {'decision_id': decision_id, 'decision': decision,
+                          'policy_version': policy_info['policy_version'],
+                          'receipt': receipt_key})
+        return {'decision_id': decision_id, 'attempt_id': attempt_id,
+                'decision': decision}
+
+    def reissue(self, actor: Actor, payload: dict, policy_info: dict,
+                receipt_key: str) -> dict:
+        """Consume a pending `reissue` decision and dispatch a NEW attempt.
+
+        The gateway re-enforces the role-gated `operation.reissue` policy
+        (grant scoped to the exact external resource) before this runs — that
+        enforcement IS the fresh `planned → authorized` evaluation for the new
+        attempt, run at reissue time inside the same transaction. The decision
+        is consumed atomically with the new attempt: a downstream failure
+        rolls the consumption back, leaving the decision pending (fail closed).
+        The old attempt stays `unresolved` forever; the new attempt carries a
+        new id and the same stable guard key by construction.
+        """
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        company = actor.company_id
+        attempt_id = payload['attempt_id']
+        decision_id = payload['decision_id']
+        new_attempt_id = payload['new_attempt_id']
+        if new_attempt_id == attempt_id:
+            raise DomainError('CONFLICT_ATTEMPT_EXISTS')
+        attempt = self.store.db.execute(
+            '''SELECT state,guard_key FROM operation_attempts
+               WHERE company_id=? AND id=?''',
+            (company, attempt_id)).fetchone()
+        if attempt is None:
+            raise DomainError('REFERENCE_ATTEMPT_NOT_FOUND')
+        if attempt['state'] != 'unresolved':
+            raise DomainError('OPERATION_REISSUE_NOT_ALLOWED')
+        new_key = _guard_key(company, payload['target_action'],
+                             payload['target_resource'], payload['target_payload'])
+        if new_key != attempt['guard_key']:
+            # A reissue redoes the SAME ambiguous effect under fresh
+            # authorization; a different payload is simply a new attempt, not
+            # a redispatch of this one, and must not consume this decision.
+            raise DomainError('OPERATION_REISSUE_GUARD_MISMATCH')
+        decision = self.store.db.execute(
+            '''SELECT attempt_id,decision,expires_at,consumed_by_attempt_id
+               FROM operation_reconciliations WHERE company_id=? AND id=?''',
+            (company, decision_id)).fetchone()
+        if (decision is None or decision['attempt_id'] != attempt_id
+                or decision['decision'] != 'reissue'
+                or decision['consumed_by_attempt_id'] is not None):
+            raise DomainError('OPERATION_DECISION_NOT_PENDING')
+        if self._expiry(decision['expires_at']) <= datetime.now(timezone.utc):
+            raise DomainError('OPERATION_DECISION_EXPIRED')
+        cursor = self.store.db.execute(
+            '''UPDATE operation_reconciliations SET consumed_by_attempt_id=?
+               WHERE company_id=? AND id=? AND decision='reissue'
+                 AND consumed_by_attempt_id IS NULL''',
+            (new_attempt_id, company, decision_id))
+        if cursor.rowcount != 1:
+            raise DomainError('OPERATION_DECISION_NOT_PENDING')
+        actor_ref = f'agent:{actor.agent_id}@{actor.appointment_id}'
+        self.store.audit(company, 'operation_attempt', attempt_id,
+                         'operation.reissue_decision_consumed', actor_ref,
+                         {'decision_id': decision_id,
+                          'new_attempt_id': new_attempt_id,
+                          'receipt': receipt_key})
+        return self.dispatch(actor, {
+            'attempt_id': new_attempt_id,
+            'target_action': payload['target_action'],
+            'target_resource': payload['target_resource'],
+            'target_payload': payload['target_payload'],
+        }, policy_info, receipt_key)
+
+    @staticmethod
+    def _expiry(value: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError) as exc:
+            raise DomainError('OPERATION_DECISION_INVALID_EXPIRY') from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise DomainError('OPERATION_DECISION_INVALID_EXPIRY')
+        return parsed

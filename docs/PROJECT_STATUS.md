@@ -1,6 +1,6 @@
 # Project Status & Repository Handoff
 
-**Verified snapshot:** 2026-11-19  
+**Verified snapshot:** 2026-11-20  
 **Repository:** https://github.com/kefyusuf/agent-company-os  
 **Default branch:** `main`  
 **Status vocabulary:** Designed ≠ Implemented ≠ Locally tested ≠ CI-verified ≠ Production-ready.
@@ -48,7 +48,7 @@ The earlier claim that only a README is on `main` is **obsolete**. The file tree
 | M5.3-B1 | Pure versioned DENY/PERMIT/APPROVAL_REQUIRED evaluator | **Merged (PR #7)**; 49 exact-source local tests, not gateway-integrated |
 | M5.3-B2 | Trusted SQLite state resolver and gateway policy binding | **Merged (PR #9)**; 52 new tests; full checkout verified 193/193 (2026-11-14) |
 | M5.3-C | Trusted host attestation, one-time approvals, budget reservation, review lineage | **Implemented (PRs #14–#17)**; fixture-grade attestation, **NOT production authentication** |
-| M5.4 | External operation boundary: attempt ledger + adapter seam | **D-PR1 (PR #20) and D-PR2 (PR #23) merged**; D-PR3 (human decision records + reissue + pause guards) pending; no real effects, production NO-GO unchanged |
+| M5.4 | External operation boundary: attempt ledger + adapter seam | **D-PR1 (PR #20) and D-PR2 (PR #23) merged; D-PR3 (human decision records + reissue + pause guards) implemented on `feat/m5.4-d3-human-decisions`** — external operation boundary fixture-complete; no real effects, production NO-GO unchanged |
 
 ## Verification evidence and limits
 
@@ -69,6 +69,7 @@ Observed in the local environment:
 - **GitHub Actions (2026-11-16):** **first green CI run recorded** — run `43927485071` on `main` after the hardening merge, conclusion **success** (`compileall` + `ruff` + 220-test suite + 85% coverage gate + `scripts/verify.py`). The suite is now machine-enforced on every push/PR; fixture/pure-unit scope unchanged, not full M4.3 conformance or production security.
 - **Repo norm closeout (2026-11-19, branch `chore/repo-norm-closeout`):** Apache-2.0 `LICENSE` and a PEP 621 `pyproject.toml` manifest added (ruff config absorbed from `ruff.toml`, which is removed); README and navigation synced with merged D-PR2 evidence. Re-verified on the branch: **227/227 tests**, `compileall` clean, `ruff` clean (config now in `pyproject.toml`), coverage **91%** (`--fail-under=85`), `scripts/verify.py` **PASS** (inventory 227/227). Repo hygiene only — no milestone, production or conformance claims change.
 - **Repo norm closeout merged (2026-11-19, PR #25):** the closeout above merged into `main` (merge commit `9ef930a`) with **CI green on the PR itself** (run `44601509822`, `verify` PASS in 50s: `compileall` + `ruff` + 227-test suite + 85% coverage gate + `scripts/verify.py`). Suite remains 227/227; inventory floor unchanged; production/conformance NO-GO statements unchanged. Mimosa `store.py:116/120/121/124` findings re-confirmed as the SECURITY.md registered false positive in the PR body before push, with owner confirmation per the ask-mode norm. Merged remote branches retained — cleanup deferred by owner decision (2026-11-19).
+- **M5.4 D-PR3 (2026-11-20, branch `feat/m5.4-d3-human-decisions`):** human reconciliation decisions (`operation_reconciliations`, `reissue|abandon`), reissue-as-new-attempt consuming the decision atomically, FIX-10 guard refinement (consumed reissue releases; abandon blocks forever), and FLOW-04 pause split (only `operation.reconcile` exempt from the active-company gate; evaluator invariant keeps `suspended`/`archived` denied). 23 new tests; suite **250/250**; `compileall` clean; `ruff` clean; coverage **90%** (`--fail-under=85`); `scripts/verify.py` **PASS** (floor **227 → 250**, monotonic). Implementation refinements recorded in the D-PR3 notes of the M5.4 doc. No real provider, no network, production NO-GO unchanged.
 
 The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 command-guard definitions and six cross-domain scenario definitions. Those counts describe a **design manifest**, not 40 passing conformance cases.
 
@@ -93,7 +94,7 @@ The M4.3 YAML was successfully parsed and contains 20 invariant definitions, 14 
 8. [M5.3-B1 pure policy decisions](implementation/m5.3-b1-policy-decisions.md) — PR #7, merged
 9. [M5.3-B2 trusted SQLite snapshot binding](implementation/m5.3-b2-sqlite-policy-gateway.md) — PR #9, merged
 10. [M5.3-C trusted host, approvals, budget and lineage](implementation/m5.3-c-trusted-host.md) — PRs #14–#17, merged
-11. [M5.4 external operation boundary](implementation/m5.4-external-operation-boundary.md) — PR #19 design merged, D-PR1 (PR #20) and D-PR2 (PR #23) merged; D-PR3 pending
+11. [M5.4 external operation boundary](implementation/m5.4-external-operation-boundary.md) — PR #19 design merged, D-PR1 (PR #20) and D-PR2 (PR #23) merged; D-PR3 implemented (this change), boundary fixture-complete
 
 ## Rules for next contributions
 
