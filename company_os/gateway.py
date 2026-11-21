@@ -55,7 +55,9 @@ class FixtureSessionHost:
 
     def resolve(self, session: object) -> _Principal:
         try:
-            result = self._sessions.get(session)  # identity, never a caller-provided string
+            # identity, never a caller-provided string; the session object is
+            # deliberately opaque, so the weak-dict call ignores narrow typing.
+            result = self._sessions.get(session)  # type: ignore[call-overload]
         except TypeError:
             result = None
         if result is None:
@@ -64,7 +66,7 @@ class FixtureSessionHost:
 
     def revoke(self, session: object) -> None:
         try:
-            self._sessions.pop(session, None)
+            self._sessions.pop(session, None)  # type: ignore[call-overload]
         except TypeError:
             pass
 
@@ -117,7 +119,8 @@ class TrustedPrincipalHost:
 
     def resolve(self, session: object) -> _Principal:
         try:
-            item = self._sessions.get(session)  # identity, never a caller string
+            # identity, never a caller string; opaque session by design.
+            item = self._sessions.get(session)  # type: ignore[call-overload]
         except TypeError:
             item = None
         if item is None:
@@ -129,7 +132,7 @@ class TrustedPrincipalHost:
 
     def revoke(self, session: object) -> None:
         try:
-            self._sessions.pop(session, None)
+            self._sessions.pop(session, None)  # type: ignore[call-overload]
         except TypeError:
             pass
 
@@ -137,7 +140,7 @@ class TrustedPrincipalHost:
 # A finite, reviewed allowlist; everything else is denied.
 # str/int enforce exact primitive types, so bool does not masquerade as int.
 # Optional collections are converted only after full schema validation.
-ROUTES = MappingProxyType({
+ROUTES: Mapping[str, Mapping[str, type]] = MappingProxyType({
     'task.create': {'task_id': str, 'objective': str},
     'task.transition': {'task_id': str, 'target': str, 'expected_revision': int},
     'task.start': {'task_id': str, 'expected_revision': int},
@@ -192,13 +195,14 @@ class CommandGateway:
                for name in ('type', 'company_id', 'appointment_id', 'key')):
             raise DomainError('SCHEMA_INVALID_COMMAND')
         action = command['type']
-        spec = ROUTES.get(action)
+        spec: Mapping[str, type] | None = ROUTES.get(action)
         if spec is None:
             raise DomainError('AUTH_UNKNOWN_ACTION')
         payload = command['payload']
         if not isinstance(payload, dict):
             raise DomainError('SCHEMA_INVALID_COMMAND')
-        optional = {'evidence_ids', 'source_reports'} if action == 'report.submit' else set()
+        optional: set[str] = (
+            {'evidence_ids', 'source_reports'} if action == 'report.submit' else set())
         if not set(spec).issubset(payload) or set(payload) - set(spec) - optional:
             raise DomainError('SCHEMA_INVALID_PAYLOAD')
         if any(type(payload[k]) is not t for k, t in spec.items()):

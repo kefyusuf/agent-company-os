@@ -429,7 +429,8 @@ class Workflows:
             parent=self._row('tasks',actor.company_id,task['parent_id'])
             if parent is None or parent['accountable_appointment_id']!=actor.appointment_id:
                 raise DomainError('AUTH_NOT_REPORT_REVIEWER')
-            pending=self.s.db.execute('''SELECT 1 FROM delegations WHERE company_id=? AND parent_task_id=? AND state='offered' LIMIT 1''',
+            pending=self.s.db.execute('''SELECT 1 FROM delegations
+                WHERE company_id=? AND parent_task_id=? AND state='offered' LIMIT 1''',
                 (actor.company_id,task_id)).fetchone()
             if pending:
                 raise DomainError('STATE_PENDING_DELEGATION')

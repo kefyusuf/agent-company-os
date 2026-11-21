@@ -323,10 +323,15 @@ class SQLitePolicyResolver:
         if not rows:
             return None
         a=rows[0]
+        approval_expires=_timestamp(a['expires_at'])
+        if approval_expires is None:
+            # The schema declares expires_at NOT NULL; fail closed rather than
+            # widen the snapshot type to Option.
+            raise DomainError('POLICY_INVALID_SNAPSHOT_TIME')
         return (ApprovalSnapshot(company_id=a['company_id'],task_id=a['task_id'],
           action=a['action'],resource_id=a['resource_id'],
           payload_sha256=a['payload_sha256'],target_revision=a['target_revision'],
-          policy_version=a['policy_version'],expires_at=_timestamp(a['expires_at']),
+          policy_version=a['policy_version'],expires_at=approval_expires,
           status=a['status'],approver_kind=a['approver_kind'],approver_id=a['approver_id']),
           a['id'])
 
@@ -447,7 +452,7 @@ class SQLitePolicyResolver:
         }).encode('utf-8')).hexdigest()
         revision=task['revision'] if task is not None else company['revision']
         author_id=None
-        delegated=frozenset()
+        delegated: frozenset[str] = frozenset()
         if rule.independent_reviewer_required:
             if action not in ('report.review','report.begin_review'):
                 raise DomainError('POLICY_REVIEW_LINEAGE_UNAVAILABLE')

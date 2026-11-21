@@ -11,8 +11,9 @@ The runtime (`company_os/`) uses **only the Python standard library** — no thi
 | Component | Version | Scope | Notes |
 | --- | --- | --- | --- |
 | Python | 3.13 | runtime | stdlib only (`sqlite3`, `hashlib`, `hmac`, `secrets`, `unittest`, …) |
-| ruff | 0.17.x | CI/lint only | never imported at runtime |
-| coverage | 7.x | CI/coverage only | never imported at runtime |
+| ruff | 0.17.5 (pinned in CI) | CI/lint only | never imported at runtime |
+| coverage | 7.17.3 (pinned in CI) | CI/coverage only | never imported at runtime |
+| mypy | 2.4.1 (pinned in CI) | CI/type-check only | never imported at runtime; checks `company_os` only |
 
 A tool-generated SBOM (CycloneDX/SPDX) is intentionally deferred: with zero third-party runtime dependencies the manifest above is complete and hand-verifiable. It must be regenerated whenever a runtime dependency is introduced.
 
