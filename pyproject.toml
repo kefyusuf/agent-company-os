@@ -31,7 +31,7 @@ packages = ["company_os"]
 # repository's compact style; starts conservative and only grows
 # (monotonic, like scripts/verify.py).
 [tool.ruff]
-line-length = 160
+line-length = 120
 target-version = "py313"
 
 [tool.ruff.lint]
@@ -43,3 +43,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Test fixtures intentionally assert on error paths and reuse compact helpers.
 "tests/*" = ["E501"]
+
+# Static type checking covers the runtime package only; test fixtures use
+# deliberate duck-typed session objects that are outside the boundary model.
+[tool.mypy]
+python_version = "3.13"
+files = ["company_os"]

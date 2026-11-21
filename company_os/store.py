@@ -133,9 +133,11 @@ class Store:
                 self.db.commit()
 
     def audit(self, company: str, kind: str, item: str, event: str, actor: str, payload: dict):
-        self.db.execute('INSERT INTO audit_events(company_id,aggregate_type,aggregate_id,event_type,actor_ref,payload,occurred_at) VALUES (?,?,?,?,?,?,?)',
-                        (company,kind,item,event,actor,canonical(payload),
-                         datetime.now(timezone.utc).isoformat()))
+        self.db.execute(
+            '''INSERT INTO audit_events(company_id,aggregate_type,aggregate_id,
+               event_type,actor_ref,payload,occurred_at) VALUES (?,?,?,?,?,?,?)''',
+            (company,kind,item,event,actor,canonical(payload),
+             datetime.now(timezone.utc).isoformat()))
 
     def bootstrap(self, company: str, positions: list[tuple[str,str,str|None,str,str]]) -> Actor:
         """Fixture-only single-transaction setup, never a public provisioning API."""
@@ -204,8 +206,11 @@ class Store:
                 # Child tasks are created only after a scoped Delegation is accepted.
                 raise DomainError('AUTH_DELEGATION_REQUIRED')
             try:
-                self.db.execute('INSERT INTO tasks(company_id,id,parent_id,accountable_appointment_id,assigned_appointment_id,objective) VALUES (?,?,?,?,?,?)',
-                                (company,task_id,parent_id,accountable,assigned,objective))
+                self.db.execute(
+                    '''INSERT INTO tasks(company_id,id,parent_id,
+                       accountable_appointment_id,assigned_appointment_id,objective)
+                       VALUES (?,?,?,?,?,?)''',
+                    (company,task_id,parent_id,accountable,assigned,objective))
             except sqlite3.IntegrityError as e:
                 raise DomainError('SCHEMA_CONSTRAINT') from e
             result={'id':task_id,'company_id':company,'state':'draft','revision':1}
