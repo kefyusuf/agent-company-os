@@ -678,10 +678,13 @@ class PolicyGatewayTests(unittest.TestCase):
                       states=[],capabilities=['cap.planning'],cost=0)
         self.set_rule('operation.reissue',role='core.ceo@1',task_required=False,
                       states=[],capabilities=['cap.planning'],cost=2)
+        self.set_rule('operation.recover',role='core.ceo@1',task_required=False,
+                      states=[],capabilities=['cap.planning'],cost=0)
         self.grant('G-EXT2','APT-CEO',None,'operation.dispatch','external:demo')
         self.grant('G-REC2','APT-CEO',None,'operation.reconcile','company:C-A')
         self.grant('G-DEC2','APT-CEO',None,'operation.decide','company:C-A')
         self.grant('G-REI2','APT-CEO',None,'operation.reissue','external:demo')
+        self.grant('G-RCV2','APT-CEO',None,'operation.recover','company:C-A')
         self.store.db.execute('UPDATE policy_grants SET max_cost_units=5 WHERE company_id=?',
                               ('C-A',))
         return gateway
@@ -777,6 +780,45 @@ class PolicyGatewayTests(unittest.TestCase):
         self.assert_denied('AUTH_COMPANY_STATE',lambda:gateway.execute(
             self.ceo,self.cmd('operation.reconcile',{'attempt_id':'ATT-S1'},
                               key='rec-s2')))
+
+    def test_recover_resolves_crashed_dispatch_end_to_end(self):
+        # The scripted crash aborts phase 2 after the provider accepted the
+        # call: the attempt rests `authorized` with its pre-call transport
+        # identity, and the trusted-host recovery command resolves it from
+        # adapter status evidence alone (G-T2) — never by re-dispatching.
+        adapter=ScriptedExternalAdapter()
+        adapter.script('external.demo','crash')
+        gateway=self._decision_gateway(adapter)
+        with self.assertRaises(RuntimeError):
+            gateway.execute(self.ceo,self._dispatch_cmd('ATT-R1','op-r'))
+        row=self.store.db.execute('''SELECT state,transport_key,adapter_ref
+            FROM operation_attempts WHERE company_id='C-A' AND id='ATT-R1' ''').fetchone()
+        self.assertEqual(row['state'],'authorized')
+        self.assertEqual(row['transport_key'],'IDEM-ATT-R1')
+        self.assertIsNone(row['adapter_ref'])
+        evidence=adapter.status_for_transport('IDEM-ATT-R1')
+        self.assertIsNotNone(evidence)
+        adapter.script_status(evidence['adapter_ref'],'succeeded')
+        recover_cmd=self.cmd('operation.recover',{'attempt_id':'ATT-R1'},key='rcv-1')
+        result=gateway.execute(self.ceo,recover_cmd)
+        self.assertEqual(result,{'attempt_id':'ATT-R1','state':'succeeded','recovered':True})
+        self.assertEqual(gateway.execute(self.ceo,recover_cmd),result)
+        # Held dispatch cost stays consumed by the recovered success.
+        self.assertEqual(self.store.db.execute(
+            'SELECT remaining_units FROM policy_budgets WHERE company_id=?',
+            ('C-A',)).fetchone()['remaining_units'],8)
+
+    def test_crashed_dispatch_command_cannot_reexecute(self):
+        # The crash left the command key without a receipt: a re-execution
+        # re-authorizes and then fails closed on the existing attempt —
+        # no silent double dispatch (FIX-10 at the command layer).
+        adapter=ScriptedExternalAdapter()
+        adapter.script('external.demo','crash')
+        gateway=self._decision_gateway(adapter)
+        cmd=self._dispatch_cmd('ATT-R2','op-r2')
+        with self.assertRaises(RuntimeError):
+            gateway.execute(self.ceo,cmd)
+        self.assert_denied('CONFLICT_ATTEMPT_EXISTS',lambda:gateway.execute(self.ceo,cmd))
 
 if __name__ == '__main__':
     unittest.main()
