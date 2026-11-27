@@ -28,8 +28,12 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from .store import Actor, DomainError, Store, canonical
+
+if TYPE_CHECKING:
+    from .transport import ExternalAdapter
 
 
 OPERATIONS_SCHEMA = """
@@ -241,7 +245,7 @@ class ExternalOperationManager:
     settles (D-PR2).
     """
 
-    def __init__(self, store: Store, adapter: ScriptedExternalAdapter):
+    def __init__(self, store: Store, adapter: "ExternalAdapter"):
         if store.db.in_transaction:
             raise DomainError('OPERATIONS_INITIALIZE_OUTSIDE_TRANSACTION')
         self.store = store

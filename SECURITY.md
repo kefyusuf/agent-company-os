@@ -23,6 +23,9 @@ Static-analysis dispositions are recorded, not silently ignored (per the defect-
 
 - `company_os/store.py` savepoint identifiers (`SAVEPOINT command_sp_{n}`): f-string built **only** from a fixed literal prefix and an internal integer counter; no caller-controlled value reaches the statement. Confirmed false positive by the owner — recorded in PR #11 and re-confirmed on every commit report.
 - `gateway.execute(...)` calls in tests: the `CommandGateway.execute` **Python method** is name-collided with `sqlite3.Connection.execute` by the scanner. Confirmed false positive repeatedly (PRs #15–#17, #20 bodies); the tool's ask-mode was used with explicit owner confirmation per write.
+- Test-setup helper INSERTs (`tests/test_policy_gateway.py` setUp/grant helpers, lines 14/24/41/51 and later): flagged as SQL injection; all values are `?`-bound — data-flow misattribution. Confirmed false positive by the owner (2026-11-20, keep-as-is per ask-mode).
+- `company_os/transport.py` `urlopen` calls (T-PR2, 2026-11-27): flagged as SSRF. Review found the pre-network allowlist/scheme/credential validation intact but **one genuine vector**: default redirect following could bypass the allowlist. Fixed properly — redirects are denied (`_DenyRedirects`), surfaced as `unknown`, contract-tested with zero follow-up requests. DNS-rebinding/resolved-IP pinning is deferred to T-PR3 as a gate item (the loopback contract harness makes private-IP blocking wrong for this stage). Recorded as a **partially valid finding, resolved by fix**, not a suppression.
+- `tests/test_transport.py` `_db_values` table-name interpolation (2026-11-27): flagged as SQL injection; the value was a hardcoded test literal (no caller-controlled input), but the pattern was real. Fixed by rewriting as three explicit parameterized queries per owner decision — recorded as **valid pattern, resolved by fix**.
 
 ## Reporting
 
