@@ -194,6 +194,7 @@ TASK_FIELD = {
     'operation.reconcile': None,
     'operation.decide': None,
     'operation.reissue': None,
+    'operation.recover': None,
 }
 
 

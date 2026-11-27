@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS operation_attempts (
     consumed_approval_id TEXT,
     reserved_cost_units INTEGER NOT NULL DEFAULT 0,
     guard_key TEXT NOT NULL,
+    transport_key TEXT,
     adapter_ref TEXT,
     evidence_ref TEXT,
     created_at TEXT NOT NULL,
@@ -57,6 +58,8 @@ CREATE TABLE IF NOT EXISTS operation_attempts (
 );
 -- Attempt identity/binding columns never change after insertion; only the
 -- lifecycle columns (state, adapter_ref, evidence_ref, updated_at) move.
+-- transport_key is recorded once at authorization (T-PR1, G-T4) and is
+-- binding-immutable from then on.
 CREATE TRIGGER IF NOT EXISTS immutable_attempt_binding
 BEFORE UPDATE ON operation_attempts
 BEGIN
@@ -69,7 +72,8 @@ BEGIN
        OR NEW.attempted_by_appointment_id IS NOT OLD.attempted_by_appointment_id
        OR NEW.consumed_approval_id IS NOT OLD.consumed_approval_id
        OR NEW.reserved_cost_units IS NOT OLD.reserved_cost_units
-       OR NEW.guard_key IS NOT OLD.guard_key;
+       OR NEW.guard_key IS NOT OLD.guard_key
+       OR NEW.transport_key IS NOT OLD.transport_key;
 END;
 -- D-PR3: dedicated human reconciliation decisions (owner-approved design).
 -- Provenance is append-only; exactly one consumption may bind a `reissue`
@@ -113,6 +117,7 @@ END;
 ATTEMPT_TRANSITIONS = frozenset({
     ('planned', 'authorized'),
     ('authorized', 'dispatched'),
+    ('authorized', 'unknown'),      # T-PR1 recovery: no settled provider evidence
     ('dispatched', 'succeeded'),
     ('dispatched', 'failed'),
     ('dispatched', 'unknown'),
@@ -142,20 +147,39 @@ def _guard_key(company: str, target_action: str, target_resource: str,
 
 
 class ScriptedExternalAdapter:
-    """Deterministic test adapter — the ONLY adapter implemented in M5.4.
+    """Deterministic test adapter — the ONLY adapter implemented in M5.4/M5.5.
 
     Outcomes come from a host-side script per target action; dispatch()
     consumes the next scripted outcome. No network, no credentials, no real
-    effects. status() reports recorded outcomes for future reconciliation.
+    effects. status() reports recorded outcomes for future reconciliation;
+    status_for_transport() is the recovery evidence source (G-T2): it looks
+    attempts up by the pre-call transport identity, so a crash between the
+    provider accepting a call and the ledger learning about it is resolvable.
+
+    The scripted pseudo-outcome 'crash' models the T-PR1 crash window: the
+    send is recorded in adapter history (evidence survives) and dispatch()
+    then raises, aborting phase 2 deterministically.
     """
+
+    PSEUDO_OUTCOMES = frozenset({'crash'})
 
     def __init__(self):
         self._script: dict[str, list[dict]] = {}
         self._status_override: dict[str, str] = {}
         self._history: list[dict] = []
 
+    @staticmethod
+    def transport_key(attempt_id: str) -> str:
+        """Deterministic pre-call transport identity (G-T4).
+
+        Derived from the attempt id and recorded on the attempt row during
+        phase 1, BEFORE any external call — this is what makes a post-crash
+        status query possible without knowing whether the call completed.
+        """
+        return 'IDEM-' + attempt_id
+
     def script(self, action: str, outcome: str) -> None:
-        if outcome not in OUTCOMES:
+        if outcome not in OUTCOMES | self.PSEUDO_OUTCOMES:
             raise ValueError('invalid scripted outcome')
         self._script.setdefault(action, []).append({'outcome': outcome})
 
@@ -179,8 +203,13 @@ class ScriptedExternalAdapter:
         adapter_ref = 'ADPT-%04d' % (len(self._history) + 1)
         self._history.append({'adapter_ref': adapter_ref,
                               'action': attempt['action'],
-                              'outcome': item['outcome'],
-                              'attempt_id': attempt.get('attempt_id')})
+                              'outcome': 'unknown' if item['outcome'] == 'crash'
+                                         else item['outcome'],
+                              'attempt_id': attempt.get('attempt_id'),
+                              'transport_key': attempt.get('transport_key')})
+        if item['outcome'] == 'crash':
+            raise RuntimeError('simulated crash after provider accepted '
+                               + attempt['action'])
         return {'outcome': item['outcome'], 'adapter_ref': adapter_ref,
                 'evidence_ref': 'evidence:' + adapter_ref}
 
@@ -189,6 +218,15 @@ class ScriptedExternalAdapter:
             if item['adapter_ref'] == adapter_ref:
                 outcome = self._status_override.get(adapter_ref, item['outcome'])
                 return {'outcome': outcome, 'adapter_ref': adapter_ref}
+        return None
+
+    def status_for_transport(self, transport_key: str) -> dict | None:
+        """Recovery evidence source (G-T2): status by pre-call identity."""
+        for item in self._history:
+            if item.get('transport_key') == transport_key:
+                outcome = self._status_override.get(item['adapter_ref'],
+                                                    item['outcome'])
+                return {'outcome': outcome, 'adapter_ref': item['adapter_ref']}
         return None
 
 
@@ -228,13 +266,15 @@ class ExternalOperationManager:
         self.store.audit(company, 'operation_attempt', attempt_id,
                          'operation.' + new, actor_ref, {'from': old, **metadata})
 
-    def dispatch(self, actor: Actor, payload: dict, policy_info: dict,
-                 receipt_key: str) -> dict:
-        """Create and dispatch one attempt inside the caller's transaction.
+    def authorize_dispatch(self, actor: Actor, payload: dict, policy_info: dict,
+                           receipt_key: str) -> str:
+        """T-PR1 phase 1: authorize one attempt and commit it with the caller.
 
-        payload is the gateway-validated `operation.dispatch` payload:
-        {attempt_id, target_action, target_resource, target_payload}.
-        policy_info is the resolver result for the operation.dispatch action.
+        Runs all guards (duplicate id, mid-flight, FIX-10), inserts the attempt
+        as `planned`, transitions it to `authorized` and records the pre-call
+        transport identity (G-T4) — all inside the caller's transaction, so the
+        authorization is durable BEFORE any external call (G-T1). Budget is
+        reserved here by the resolver and stays held until the attempt settles.
         """
         if not self.store.db.in_transaction:
             raise DomainError('POLICY_REQUIRES_TRANSACTION')
@@ -247,6 +287,16 @@ class ExternalOperationManager:
                 'SELECT 1 FROM operation_attempts WHERE company_id=? AND id=?',
                 (company, attempt_id)).fetchone() is not None:
             raise DomainError('CONFLICT_ATTEMPT_EXISTS')
+        # T-PR1: the two-phase shape creates mid-flight rest states; a second
+        # same-key attempt must not authorize while one rests (its transport
+        # key differs per attempt id, so the provider would see two effects).
+        midflight = self.store.db.execute(
+            '''SELECT 1 FROM operation_attempts
+               WHERE company_id=? AND guard_key=? AND state IN ('authorized','dispatched')
+               LIMIT 1''',
+            (company, guard_key)).fetchone()
+        if midflight is not None:
+            raise DomainError('OPERATION_MIDFLIGHT_ATTEMPT_EXISTS')
         # FIX-10: an unresolved ambiguity blocks its guard key until a recorded
         # human `reissue` decision has been consumed by creating a new attempt.
         # `abandon` is never consumable, so it blocks forever (D-PR3).
@@ -263,46 +313,94 @@ class ExternalOperationManager:
             (company, guard_key)).fetchone()
         if prior is not None:
             raise DomainError('OPERATION_UNRESOLVED_ATTEMPT_EXISTS')
+        transport_key = self.adapter.transport_key(attempt_id)
         now = _now()
         self.store.db.execute('''INSERT INTO operation_attempts
             (company_id,id,action,resource_id,payload_sha256,state,
              attempted_by_appointment_id,policy_version,rule_digest,
-             consumed_approval_id,reserved_cost_units,guard_key,
+             consumed_approval_id,reserved_cost_units,guard_key,transport_key,
              adapter_ref,evidence_ref,created_at,updated_at)
-            VALUES (?,?,?,?,?,'planned',?,?,?,?,?,?,?,?,?,?)''',
+            VALUES (?,?,?,?,?,'planned',?,?,?,?,?,?,?,NULL,NULL,?,?)''',
             (company, attempt_id, 'operation.dispatch', payload['target_resource'],
              intent, actor.appointment_id, policy_info['policy_version'],
              policy_info['rule_digest'], policy_info.get('approval_id'),
-             policy_info['reserved_cost_units'], guard_key, None, None, now, now))
+             policy_info['reserved_cost_units'], guard_key, transport_key,
+             now, now))
         actor_ref = f'agent:{actor.agent_id}@{actor.appointment_id}'
         self._transition(company, attempt_id, 'planned', 'authorized', actor_ref,
                          {'resource_id': payload['target_resource'],
-                          'policy_version': policy_info['policy_version']})
-        # One adapter call. For the scripted fake this is in-process; a real
-        # transport replaces commit-then-dispatch semantics later (D-PR3+).
-        call = self.adapter.dispatch({
+                          'policy_version': policy_info['policy_version'],
+                          'transport_key': transport_key})
+        return transport_key
+
+    def execute_effect(self, actor: Actor, payload: dict,
+                       policy_info: dict) -> dict:
+        """T-PR1 phase 2a: run the external effect OUTSIDE any transaction.
+
+        The authorization commit is already durable; this call may crash,
+        timeout or never return a settled outcome — every such case leaves the
+        attempt resting mid-flight where `recover` resolves it from adapter
+        status evidence alone. Owner decision Q2: at fixture level this runs
+        synchronously right after the phase-1 commit; a real transport later
+        swaps only this executor.
+        """
+        if self.store.db.in_transaction:
+            raise DomainError('OPERATIONS_EFFECT_OUTSIDE_TRANSACTION')
+        company = actor.company_id
+        attempt_id = payload['attempt_id']
+        row = self.store.db.execute(
+            '''SELECT transport_key FROM operation_attempts
+               WHERE company_id=? AND id=?''',
+            (company, attempt_id)).fetchone()
+        if row is None or row['transport_key'] is None:
+            raise DomainError('REFERENCE_ATTEMPT_NOT_FOUND')
+        return self.adapter.dispatch({
             'action': payload['target_action'],
             'attempt_id': attempt_id,
             'resource_id': payload['target_resource'],
-            'payload_digest': intent,
+            'payload_digest': policy_info['intent'],
+            'transport_key': row['transport_key'],
         })
-        outcome = call['outcome']
-        self.store.db.execute(
-            '''UPDATE operation_attempts SET adapter_ref=?, evidence_ref=?, updated_at=?
+
+    def settle_dispatch(self, actor: Actor, payload: dict, call: dict,
+                        receipt_key: str) -> dict:
+        """T-PR1 phase 2b: settle one dispatched attempt in a short transaction.
+
+        Requires an attempt resting at `authorized`; applies the lifecycle
+        transitions from the effect result and settles the budget (refund on
+        `failed`, consume on `succeeded`, hold on `unknown`). The gateway
+        writes the append-only receipt in this same transaction.
+        """
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        company = actor.company_id
+        attempt_id = payload['attempt_id']
+        row = self.store.db.execute(
+            '''SELECT state,reserved_cost_units FROM operation_attempts
                WHERE company_id=? AND id=?''',
+            (company, attempt_id)).fetchone()
+        if row is None or row['state'] != 'authorized':
+            raise DomainError('OPERATION_ATTEMPT_STALE')
+        cursor = self.store.db.execute(
+            '''UPDATE operation_attempts SET adapter_ref=?, evidence_ref=?, updated_at=?
+               WHERE company_id=? AND id=? AND state='authorized' ''',
             (call['adapter_ref'], call['evidence_ref'], _now(), company, attempt_id))
+        if cursor.rowcount != 1:
+            raise DomainError('OPERATION_ATTEMPT_STALE')
+        actor_ref = f'agent:{actor.agent_id}@{actor.appointment_id}'
         self._transition(company, attempt_id, 'authorized', 'dispatched', actor_ref,
                          {'adapter_ref': call['adapter_ref']})
+        outcome = call['outcome']
         self._transition(company, attempt_id, 'dispatched', outcome, actor_ref,
                          {'evidence_ref': call['evidence_ref']})
-        if outcome == 'failed' and policy_info['reserved_cost_units'] > 0:
+        if outcome == 'failed' and row['reserved_cost_units'] > 0:
             self.store.db.execute(
                 'UPDATE policy_budgets SET remaining_units=remaining_units+? WHERE company_id=?',
-                (policy_info['reserved_cost_units'], company))
+                (row['reserved_cost_units'], company))
             self.store.audit(company, 'policy_budget', company,
                              'operation.cost_refunded', actor_ref,
                              {'attempt_id': attempt_id,
-                              'units': policy_info['reserved_cost_units']})
+                              'units': row['reserved_cost_units']})
         # succeeded: cost consumed; unknown: held until reconciliation (D-PR2).
         return {'attempt_id': attempt_id, 'state': outcome,
                 'adapter_ref': call['adapter_ref'],
@@ -478,12 +576,82 @@ class ExternalOperationManager:
                          {'decision_id': decision_id,
                           'new_attempt_id': new_attempt_id,
                           'receipt': receipt_key})
-        return self.dispatch(actor, {
-            'attempt_id': new_attempt_id,
-            'target_action': payload['target_action'],
-            'target_resource': payload['target_resource'],
-            'target_payload': payload['target_payload'],
-        }, policy_info, receipt_key)
+        # T-PR1 phase 1: the consumption and the new attempt's authorization
+        # commit together; the re-dispatched effect settles post-commit via
+        # execute_effect + settle_dispatch on the new attempt (owner Q2).
+        new_payload = {'attempt_id': new_attempt_id,
+                       'target_action': payload['target_action'],
+                       'target_resource': payload['target_resource'],
+                       'target_payload': payload['target_payload']}
+        self.authorize_dispatch(actor, new_payload, policy_info, receipt_key)
+        return {'reissued_to': new_attempt_id, 'decision_id': decision_id}
+
+    def recover(self, actor: Actor, payload: dict, receipt_key: str) -> dict:
+        """T-PR1 recovery (G-T2): resolve one mid-flight attempt.
+
+        Valid from attempts resting at `authorized` or `dispatched` without a
+        settled outcome — the rest states the two-phase shape introduces. The
+        adapter status for the pre-call transport identity is the ONLY
+        evidence (owner decision #1, M5.5): settled evidence applies the
+        missing lifecycle transitions and settles the budget; no or ambiguous
+        evidence maps the attempt to `unknown` (owner Q1), entering the
+        existing human-gated reconcile/decide path unchanged. Recovery NEVER
+        re-dispatches (owner decision #2): the only redispatch paths remain
+        D-PR3 reissue or a fresh attempt with fresh authorization.
+        """
+        if not self.store.db.in_transaction:
+            raise DomainError('POLICY_REQUIRES_TRANSACTION')
+        company = actor.company_id
+        attempt_id = payload['attempt_id']
+        row = self.store.db.execute(
+            '''SELECT state,transport_key,adapter_ref,reserved_cost_units
+               FROM operation_attempts WHERE company_id=? AND id=?''',
+            (company, attempt_id)).fetchone()
+        if row is None:
+            raise DomainError('REFERENCE_ATTEMPT_NOT_FOUND')
+        if row['state'] not in ('authorized', 'dispatched'):
+            raise DomainError('OPERATION_RECOVER_NOT_ALLOWED')
+        actor_ref = f'agent:{actor.agent_id}@{actor.appointment_id}'
+        evidence = None
+        if row['transport_key'] is not None:
+            evidence = self.adapter.status_for_transport(row['transport_key'])
+        if evidence is not None and evidence['outcome'] in ('succeeded', 'failed'):
+            outcome = evidence['outcome']
+            if row['adapter_ref'] is None:
+                # The ledger learns the adapter reference from the evidence.
+                self.store.db.execute(
+                    '''UPDATE operation_attempts
+                       SET adapter_ref=?, evidence_ref=?, updated_at=?
+                       WHERE company_id=? AND id=?''',
+                    (evidence['adapter_ref'], 'evidence:' + evidence['adapter_ref'],
+                     _now(), company, attempt_id))
+            if row['state'] == 'authorized':
+                self._transition(company, attempt_id, 'authorized', 'dispatched',
+                                 actor_ref, {'adapter_ref': evidence['adapter_ref'],
+                                             'recovered': True})
+            self._transition(company, attempt_id, 'dispatched', outcome, actor_ref,
+                             {'evidence_ref': 'evidence:' + evidence['adapter_ref'],
+                              'recovered': True})
+            if outcome == 'failed' and row['reserved_cost_units'] > 0:
+                self.store.db.execute(
+                    'UPDATE policy_budgets SET remaining_units=remaining_units+? WHERE company_id=?',
+                    (row['reserved_cost_units'], company))
+                self.store.audit(company, 'policy_budget', company,
+                                 'operation.cost_refunded', actor_ref,
+                                 {'attempt_id': attempt_id,
+                                  'units': row['reserved_cost_units']})
+            result_state = outcome
+        else:
+            # No settled evidence: the outcome is genuinely undetermined.
+            self._transition(company, attempt_id, row['state'], 'unknown',
+                             actor_ref, {'reason': 'no_settled_evidence'})
+            result_state = 'unknown'
+        self.store.audit(company, 'operation_attempt', attempt_id,
+                         'operation.recovered', actor_ref,
+                         {'from': row['state'], 'to': result_state,
+                          'receipt': receipt_key})
+        return {'attempt_id': attempt_id, 'state': result_state,
+                'recovered': True}
 
     @staticmethod
     def _expiry(value: str) -> datetime:

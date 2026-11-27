@@ -8,6 +8,7 @@ The authoritative honest-status ledger is [docs/PROJECT_STATUS.md](docs/PROJECT_
 ### Added
 - M5.4 D-PR3 — human reconciliation decisions (`operation_reconciliations`), reissue-as-new-attempt consuming the decision atomically, FIX-10 guard refinement (consumed reissue releases, `abandon` blocks forever), FLOW-04 pause split (PR #27).
 - M5.5 real transport review — pre-provider gate: threat-model delta (T1–T10), gate checklist (G-T1–G-T10) and owner-approved decisions; docs-only, no transport code (PR #29).
+- M5.5 T-PR1 — two-phase commit-then-dispatch (`authorize_dispatch` → effect → `settle_dispatch`), `operation.recover` resolving mid-flight attempts from adapter status evidence only (never re-dispatching), `authorized→unknown` transition, pre-call transport identity (`transport_key`, G-T4) and a fixture-only crash-window simulation.
 
 ### Changed
 - P3 norm hardening: `mypy` gate added for the runtime package, `ruff` line-length tightened 160 → 120, CI tool versions pinned, Dependabot enabled for GitHub Actions and pip, this CHANGELOG introduced.

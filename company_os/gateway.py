@@ -164,6 +164,7 @@ ROUTES: Mapping[str, Mapping[str, type]] = MappingProxyType({
     'operation.reissue': {'attempt_id': str, 'decision_id': str,
                           'new_attempt_id': str, 'target_action': str,
                           'target_resource': str, 'target_payload': dict},
+    'operation.recover': {'attempt_id': str},
 })
 
 
@@ -227,6 +228,10 @@ class CommandGateway:
         # Resolve the authenticated identity OUTSIDE all client-controlled data.
         principal = self._host.resolve(session)
         action = 'invalid'
+        # T-PR1: `operation.dispatch` and `operation.reissue` authorize inside
+        # the command transaction (phase 1) and settle in a second transaction
+        # after that commit (phase 2) — commit-then-dispatch, G-T1.
+        two_phase: tuple[dict, dict, str] | None = None
         try:
             action, p = self._validate(command)
             if command['company_id'] != principal.company_id:
@@ -292,8 +297,11 @@ class CommandGateway:
                     if action == 'operation.dispatch':
                         if self._operations is None:
                             raise DomainError('OPERATIONS_NOT_CONFIGURED')
-                        result = self._operations.dispatch(
+                        # T-PR1 phase 1: guards, transport identity and
+                        # planned→authorized commit with THIS transaction.
+                        self._operations.authorize_dispatch(
                             actor, p, policy_info, command['key'])
+                        two_phase = (p, p, command['key'])
                     elif action == 'operation.reconcile':
                         if self._operations is None:
                             raise DomainError('OPERATIONS_NOT_CONFIGURED')
@@ -307,8 +315,20 @@ class CommandGateway:
                     elif action == 'operation.reissue':
                         if self._operations is None:
                             raise DomainError('OPERATIONS_NOT_CONFIGURED')
-                        result = self._operations.reissue(
+                        # T-PR1 phase 1: consumption + new-attempt authorization
+                        # commit here; the re-dispatched effect settles below.
+                        self._operations.reissue(
                             actor, p, policy_info, command['key'])
+                        two_phase = (p, {'attempt_id': p['new_attempt_id'],
+                                         'target_action': p['target_action'],
+                                         'target_resource': p['target_resource'],
+                                         'target_payload': p['target_payload']},
+                                     command['key'])
+                    elif action == 'operation.recover':
+                        if self._operations is None:
+                            raise DomainError('OPERATIONS_NOT_CONFIGURED')
+                        result = self._operations.recover(
+                            actor, p, command['key'])
                     else:
                         result = self._dispatch(action, actor, p, command['key'])
                         if action == 'report.submit':
@@ -316,11 +336,30 @@ class CommandGateway:
                             # canonical records in the same transaction.
                             self._policy_resolver.record_report_lineage(
                                 actor, p['report_id'], p['version'])
-                    if action != 'report.sources':
+                    if action != 'report.sources' and two_phase is None:
                         self._policy_resolver.save_gateway_receipt(
                             actor, action, p, command['key'], policy_info, result)
-                    return result
-                return self._dispatch(action, actor, p, command['key'])
+                    if two_phase is None:
+                        return result
+                else:
+                    return self._dispatch(action, actor, p, command['key'])
+            # The phase-1 authorization commit is durable here (G-T1). Phase 2
+            # runs outside it (owner decision Q2): effect first, then a short
+            # settlement transaction that also writes the append-only receipt.
+            if two_phase is not None:
+                if self._operations is None:
+                    # Unreachable: two_phase is only set under a configured
+                    # manager; kept as an explicit fail-closed guard.
+                    raise DomainError('OPERATIONS_NOT_CONFIGURED')
+                original_p, phase2_payload, key = two_phase
+                call = self._operations.execute_effect(actor, phase2_payload,
+                                                       policy_info)
+                with self._store.tx():
+                    result = self._operations.settle_dispatch(
+                        actor, phase2_payload, call, key)
+                    self._policy_resolver.save_gateway_receipt(
+                        actor, action, original_p, key, policy_info, result)
+                return result
         except DomainError as exc:
             # A denied attempt is auditable, but never leaks raw payload or secrets.
             # Unknown sessions cannot be attributed and are not persisted here.

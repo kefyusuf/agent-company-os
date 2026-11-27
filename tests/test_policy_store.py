@@ -430,9 +430,13 @@ class ExternalOperationTests(unittest.TestCase):
                           ('C','pol@1',rule['action'],json.dumps(rule),cost))
 
     def _run(self,payload,key='k1'):
+        """T-PR1 two-phase shape: authorize+commit, then effect+settlement."""
         with self.s.tx():
             info=self.r.enforce(self.actor,'operation.dispatch',payload)
-            return self.manager.dispatch(self.actor,payload,info,key)
+            self.manager.authorize_dispatch(self.actor,payload,info,key)
+        call=self.manager.execute_effect(self.actor,payload,info)
+        with self.s.tx():
+            return self.manager.settle_dispatch(self.actor,payload,call,key)
 
     def attempts(self):
         return self.s.db.execute('SELECT count(*) FROM operation_attempts').fetchone()[0]
@@ -472,11 +476,20 @@ class ExternalOperationTests(unittest.TestCase):
         self.assertEqual(result['state'],'unknown')
         self.assertEqual(self.budget(),7)
 
-    def test_unscripted_adapter_error_rolls_back_everything(self):
+    def test_unscripted_effect_leaves_attempt_midflight_recoverable(self):
+        # T-PR1: the effect error happens AFTER the authorization commit, so
+        # the attempt rests at `authorized` with its budget held — exactly the
+        # crash window `recover` exists for (G-T1/G-T2). Nothing is lost and
+        # nothing is retried automatically.
         with self.assertRaises(RuntimeError):
             self._run(self.payload)
-        self.assertEqual(self.attempts(),0)
-        self.assertEqual(self.budget(),10)
+        self.assertEqual(self.attempts(),1)
+        self.assertEqual(self.budget(),7)
+        row=self.s.db.execute('''SELECT state,transport_key,adapter_ref
+            FROM operation_attempts WHERE company_id='C' AND id='ATT-1' ''').fetchone()
+        self.assertEqual(row['state'],'authorized')
+        self.assertEqual(row['transport_key'],'IDEM-ATT-1')
+        self.assertIsNone(row['adapter_ref'])
 
     def test_attempt_binding_is_immutable(self):
         self.adapter.script('external.publish','succeeded')
@@ -540,7 +553,10 @@ class ExternalOperationTests(unittest.TestCase):
         self.adapter.script('external.publish','succeeded')
         with self.s.tx():
             info=self.r.enforce(self.actor,'operation.dispatch',approval_payload)
-            result=self.manager.dispatch(self.actor,approval_payload,info,'apr-key')
+            self.manager.authorize_dispatch(self.actor,approval_payload,info,'apr-key')
+        call=self.manager.execute_effect(self.actor,approval_payload,info)
+        with self.s.tx():
+            result=self.manager.settle_dispatch(self.actor,approval_payload,call,'apr-key')
         self.assertEqual(result['state'],'succeeded')
         row=self.s.db.execute('''SELECT consumed_approval_id FROM operation_attempts
             WHERE company_id='C' AND id='ATT-APR' ''').fetchone()
@@ -653,9 +669,13 @@ class ReconciliationDecisionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _dispatch(self,payload,key='k1'):
+        """T-PR1 two-phase shape: authorize+commit, then effect+settlement."""
         with self.s.tx():
             info=self.r.enforce(self.actor,'operation.dispatch',payload)
-            return self.manager.dispatch(self.actor,payload,info,key)
+            self.manager.authorize_dispatch(self.actor,payload,info,key)
+        call=self.manager.execute_effect(self.actor,payload,info)
+        with self.s.tx():
+            return self.manager.settle_dispatch(self.actor,payload,call,key)
 
     def _reconcile(self,attempt_id='ATT-1',key='rec-1'):
         with self.s.tx():
@@ -675,13 +695,19 @@ class ReconciliationDecisionTests(unittest.TestCase):
             return self.manager.decide(self.actor,payload,info,key)
 
     def _reissue(self,decision_id='DEC-1',new_attempt_id='ATT-2',key='rei-1',
-                 attempt_id='ATT-1'):
+                 attempt_id='ATT-1',effect=True):
+        """T-PR1 two-phase reissue: consume+authorize commit, then effect."""
         payload={'attempt_id':attempt_id,'decision_id':decision_id,
                  'new_attempt_id':new_attempt_id,'target_action':'external.publish',
                  'target_resource':'external:publish','target_payload':{'note':'x'}}
         with self.s.tx():
             info=self.r.enforce(self.actor,'operation.reissue',payload)
-            return self.manager.reissue(self.actor,payload,info,key)
+            self.manager.reissue(self.actor,payload,info,key)
+        phase2={'attempt_id':new_attempt_id,'target_action':'external.publish',
+                'target_resource':'external:publish','target_payload':{'note':'x'}}
+        call=self.manager.execute_effect(self.actor,phase2,info)
+        with self.s.tx():
+            return self.manager.settle_dispatch(self.actor,phase2,call,key)
 
     def _insert_decision(self,decision_id='DEC-X',attempt_id='ATT-1',decision='reissue',
                          expires=None):
@@ -934,6 +960,207 @@ class ReconciliationDecisionTests(unittest.TestCase):
             self.s.db.execute("UPDATE operation_reconciliations SET consumed_by_attempt_id='ATT-9' WHERE id='DEC-1'")
         row=self.s.db.execute("SELECT consumed_by_attempt_id FROM operation_reconciliations WHERE id='DEC-1'").fetchone()
         self.assertEqual(row['consumed_by_attempt_id'],'ATT-2')
+
+class TwoPhaseRecoveryTests(unittest.TestCase):
+    """M5.5 T-PR1: commit-then-dispatch crash windows and the recovery command."""
+
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.s=Store(Path(self.tmp.name)/'twophase.db',fixture_bootstrap=True)
+        d=self.s.db
+        d.execute('INSERT INTO companies(id,state) VALUES (?,?)',('C','active'))
+        d.execute('INSERT INTO positions VALUES (?,?,?,?)',('C','P','role.engineer@1',None))
+        d.execute('INSERT INTO agents VALUES (?,?,?)',('C','AGT','permanent'))
+        d.execute('INSERT INTO appointments VALUES (?,?,?,?,?)',('C','APT','AGT','P','active'))
+        self.r=SQLitePolicyResolver(self.s)
+        d.execute('INSERT INTO appointment_capabilities VALUES (?,?,?)',('C','APT','cap.dispatch'))
+        d.execute('INSERT INTO company_policy_versions VALUES (?,?,?)',('C','pol@1',1))
+        base={'eligible_roles':['role.engineer@1'],'required_capabilities':['cap.dispatch'],
+              'allowed_task_states':[],'allowed_company_states':['active'],
+              'task_required':False,'approval_required':False,'risk_level':'L2'}
+        for action,cost in (('operation.dispatch',3),('operation.reconcile',0),
+                            ('operation.decide',0),('operation.reissue',3),
+                            ('operation.recover',0)):
+            d.execute('INSERT INTO company_policy_rules VALUES (?,?,?,?,?)',
+                      ('C','pol@1',action,json.dumps({**base,'action':action}),cost))
+        for gid,action,resource in (('G-EXT','operation.dispatch','external:publish'),
+                                    ('G-REC','operation.reconcile','company:C'),
+                                    ('G-DEC','operation.decide','company:C'),
+                                    ('G-REI','operation.reissue','external:publish'),
+                                    ('G-RCV','operation.recover','company:C')):
+            d.execute('INSERT INTO policy_grants VALUES (?,?,?,?,?,?,?,?,?)',
+                      ('C',gid,'APT',None,action,resource,
+                       (NOW+timedelta(hours=1)).isoformat(),5,1))
+        d.execute('INSERT INTO policy_budgets VALUES (?,?)',('C',10))
+        self.adapter=ScriptedExternalAdapter()
+        self.manager=ExternalOperationManager(self.s,self.adapter)
+        self.actor=Actor('C','AGT','APT')
+        self.payload={'attempt_id':'ATT-1','target_action':'external.publish',
+                      'target_resource':'external:publish','target_payload':{'note':'x'}}
+
+    def tearDown(self):
+        self.s.close()
+        self.tmp.cleanup()
+
+    def _authorize(self,payload,key='k1'):
+        """Phase 1 only: authorization commits, effect never runs."""
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.dispatch',payload)
+            self.manager.authorize_dispatch(self.actor,payload,info,key)
+        return info
+
+    def _dispatch(self,payload,key='k1'):
+        with self.s.tx():
+            info=self.r.enforce(self.actor,'operation.dispatch',payload)
+            self.manager.authorize_dispatch(self.actor,payload,info,key)
+        call=self.manager.execute_effect(self.actor,payload,info)
+        with self.s.tx():
+            return self.manager.settle_dispatch(self.actor,payload,call,key)
+
+    def _recover(self,attempt_id='ATT-1',key='rec-x'):
+        with self.s.tx():
+            return self.manager.recover(self.actor,{'attempt_id':attempt_id},key)
+
+    def _reconcile(self,attempt_id='ATT-1',key='rec-1'):
+        with self.s.tx():
+            return self.manager.reconcile(self.actor,{'attempt_id':attempt_id},key)
+
+    def budget(self):
+        return self.s.db.execute(
+            "SELECT remaining_units FROM policy_budgets WHERE company_id='C'").fetchone()['remaining_units']
+
+    def state_of(self,attempt_id):
+        return self.s.db.execute(
+            '''SELECT state FROM operation_attempts WHERE company_id='C' AND id=?''',
+            (attempt_id,)).fetchone()['state']
+
+    def test_phase1_commits_with_transport_identity(self):
+        self.adapter.script('external.publish','crash')
+        with self.assertRaises(RuntimeError):
+            self._dispatch(self.payload)
+        row=self.s.db.execute('''SELECT state,transport_key,adapter_ref
+            FROM operation_attempts WHERE company_id='C' AND id='ATT-1' ''').fetchone()
+        self.assertEqual(row['state'],'authorized')
+        self.assertEqual(row['transport_key'],'IDEM-ATT-1')
+        self.assertIsNone(row['adapter_ref'])
+        self.assertEqual(self.budget(),7)
+        authorized=self.s.db.execute("SELECT count(*) FROM audit_events WHERE event_type='operation.authorized'").fetchone()[0]
+        self.assertEqual(authorized,1)
+
+    def test_transport_identity_is_immutable(self):
+        self._authorize(self.payload)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.db.execute("UPDATE operation_attempts SET transport_key='IDEM-FORGED' WHERE id='ATT-1'")
+
+    def test_crash_after_send_recovers_to_succeeded(self):
+        self.adapter.script('external.publish','crash')
+        with self.assertRaises(RuntimeError):
+            self._dispatch(self.payload)
+        evidence=self.adapter.status_for_transport('IDEM-ATT-1')
+        self.assertIsNotNone(evidence)
+        self.adapter.script_status(evidence['adapter_ref'],'succeeded')
+        result=self._recover()
+        self.assertEqual(result,{'attempt_id':'ATT-1','state':'succeeded','recovered':True})
+        self.assertEqual(self.state_of('ATT-1'),'succeeded')
+        self.assertEqual(self.budget(),7)
+        recovered=self.s.db.execute("SELECT count(*) FROM audit_events WHERE event_type='operation.recovered'").fetchone()[0]
+        self.assertEqual(recovered,1)
+
+    def test_crash_after_send_recovers_to_failed_refunds(self):
+        self.adapter.script('external.publish','crash')
+        with self.assertRaises(RuntimeError):
+            self._dispatch(self.payload)
+        evidence=self.adapter.status_for_transport('IDEM-ATT-1')
+        self.adapter.script_status(evidence['adapter_ref'],'failed')
+        result=self._recover()
+        self.assertEqual(result['state'],'failed')
+        self.assertEqual(self.budget(),10)
+
+    def test_recover_without_evidence_maps_unknown_enters_human_path(self):
+        # Window 1: the process died before the call ever went out.
+        self._authorize(self.payload)
+        result=self._recover()
+        self.assertEqual(result['state'],'unknown')
+        self.assertEqual(self.budget(),7)
+        # The existing human-gated machinery takes over unchanged (owner Q1).
+        result=self._reconcile()
+        self.assertEqual(result['state'],'unresolved')
+        with self.assertRaises(DomainError) as caught:
+            self._dispatch({'attempt_id':'ATT-2','target_action':'external.publish',
+                            'target_resource':'external:publish','target_payload':{'note':'x'}},
+                           key='retry')
+        self.assertEqual(caught.exception.code,'OPERATION_UNRESOLVED_ATTEMPT_EXISTS')
+
+    def test_recover_resolves_dispatched_rest_state(self):
+        self.adapter.script('external.publish','crash')
+        with self.assertRaises(RuntimeError):
+            self._dispatch(self.payload)
+        # Trusted fixture write modeling a ledger that learned `dispatched`
+        # but never settled the outcome (possible with a real transport).
+        self.s.db.execute("UPDATE operation_attempts SET state='dispatched' WHERE id='ATT-1'")
+        evidence=self.adapter.status_for_transport('IDEM-ATT-1')
+        self.adapter.script_status(evidence['adapter_ref'],'succeeded')
+        result=self._recover()
+        self.assertEqual(result['state'],'succeeded')
+
+    def test_recover_requires_midflight_state(self):
+        self.adapter.script('external.publish','succeeded')
+        self._dispatch(self.payload)
+        with self.assertRaises(DomainError) as caught:
+            self._recover()
+        self.assertEqual(caught.exception.code,'OPERATION_RECOVER_NOT_ALLOWED')
+        self._recover_no_evidence_to_unknown()
+        with self.assertRaises(DomainError) as caught:
+            self._recover()
+        self.assertEqual(caught.exception.code,'OPERATION_RECOVER_NOT_ALLOWED')
+
+    def _recover_no_evidence_to_unknown(self):
+        payload={'attempt_id':'ATT-9','target_action':'external.publish',
+                 'target_resource':'external:publish','target_payload':{'n':0}}
+        self._authorize(payload,key='k9')
+        self._recover('ATT-9')
+
+    def test_midflight_attempt_blocks_same_key_dispatch(self):
+        self.adapter.script('external.publish','crash')
+        with self.assertRaises(RuntimeError):
+            self._dispatch(self.payload)
+        with self.assertRaises(DomainError) as caught:
+            self._dispatch({'attempt_id':'ATT-2','target_action':'external.publish',
+                            'target_resource':'external:publish','target_payload':{'note':'x'}},
+                           key='retry')
+        self.assertEqual(caught.exception.code,'OPERATION_MIDFLIGHT_ATTEMPT_EXISTS')
+        self.assertEqual(self.s.db.execute(
+            'SELECT count(*) FROM operation_attempts').fetchone()[0],1)
+
+    def test_reissue_effect_crash_then_recover(self):
+        self.adapter.script('external.publish','unknown')
+        self._dispatch(self.payload,key='d1')
+        with self.s.tx():
+            self.manager.reconcile(self.actor,{'attempt_id':'ATT-1'},'rec-1')
+        with self.s.tx():
+            di=self.r.enforce(self.actor,'operation.decide',
+                {'attempt_id':'ATT-1','decision_id':'DEC-1','decision':'reissue',
+                 'expires_at':(NOW+timedelta(hours=1)).isoformat()})
+            self.manager.decide(self.actor,{'attempt_id':'ATT-1','decision_id':'DEC-1',
+                'decision':'reissue','expires_at':(NOW+timedelta(hours=1)).isoformat()},di,'dec-1')
+        reissue_payload={'attempt_id':'ATT-1','decision_id':'DEC-1',
+                         'new_attempt_id':'ATT-2','target_action':'external.publish',
+                         'target_resource':'external:publish','target_payload':{'note':'x'}}
+        with self.s.tx():
+            ri=self.r.enforce(self.actor,'operation.reissue',reissue_payload)
+            self.manager.reissue(self.actor,reissue_payload,ri,'rei-1')
+        # The re-dispatched effect crashes after the provider accepted it.
+        phase2={'attempt_id':'ATT-2','target_action':'external.publish',
+                'target_resource':'external:publish','target_payload':{'note':'x'}}
+        with self.assertRaises(RuntimeError):
+            self.manager.execute_effect(self.actor,phase2,ri)
+        self.assertEqual(self.state_of('ATT-2'),'authorized')
+        # Decision consumption stays committed; recovery resolves the orphan.
+        result=self._recover('ATT-2')
+        self.assertEqual(result['state'],'unknown')
+        self.assertEqual(self.state_of('ATT-1'),'unresolved')
+        consumed=self.s.db.execute("SELECT consumed_by_attempt_id FROM operation_reconciliations WHERE id='DEC-1'").fetchone()['consumed_by_attempt_id']
+        self.assertEqual(consumed,'ATT-2')
 
 if __name__ == '__main__':
     unittest.main()
