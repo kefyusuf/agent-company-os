@@ -20,7 +20,8 @@ from pathlib import Path
 from company_os.operations import ExternalOperationManager, ScriptedExternalAdapter
 from company_os.store import Store, Actor
 from company_os.policy_store import SQLitePolicyResolver
-from company_os.transport import ExternalAdapter, ExternalHttpTransport
+from company_os.transport import (_PinnedHTTPConnection, ExternalAdapter,
+                                  ExternalHttpTransport)
 
 NOW = datetime.now(timezone.utc)
 RAW_BODY_MARKER = 'RAW-PROVIDER-PAYLOAD-MARKER'
@@ -292,6 +293,89 @@ class TransportContractTests(unittest.TestCase):
                 'transport_key': transport.transport_key('ATT-1')})
         self.assertEqual(str(caught.exception), 'TRANSPORT_CREDENTIAL_UNAVAILABLE')
         self.assertEqual(self.provider.post_count, 0)
+
+
+class TransportPinningContractTests(unittest.TestCase):
+    """T-PR3 Q3: resolve-and-validate pinning contract (resolver stub, no DNS)."""
+
+    def setUp(self):
+        self.provider = FakeProviderServer()
+        self.calls: list[str] = []
+
+    def tearDown(self):
+        self.provider.stop()
+
+    def _transport(self, resolved, endpoint='https://provider.example.com/publish'):
+        def resolver(hostname):
+            self.calls.append(hostname)
+            return list(resolved)
+        return ExternalHttpTransport(
+            endpoints={'external.publish': endpoint},
+            allowed_origins={'provider.example.com', '127.0.0.1:%d' % self.provider.port},
+            credential_resolver=lambda url: SECRET,
+            resolver=resolver)
+
+    def _attempt(self, transport, attempt_id='ATT-1'):
+        return transport.dispatch({
+            'action': 'external.publish', 'attempt_id': attempt_id,
+            'resource_id': 'external:publish', 'payload_digest': 'sha256:x',
+            'transport_key': transport.transport_key(attempt_id)})
+
+    def test_loopback_exception_skips_resolution(self):
+        transport = self._transport([], endpoint=self.provider.url('publish'))
+        self.assertIsNone(transport._validated_address(self.provider.url('publish')))
+        self.assertEqual(self.calls, [])
+
+    def test_public_resolution_returns_pinned_ip(self):
+        transport = self._transport(['93.184.216.34'])
+        pinned = transport._validated_address('https://provider.example.com/publish')
+        self.assertEqual(pinned, '93.184.216.34')
+        self.assertEqual(self.calls, ['provider.example.com'])
+
+    def test_private_resolution_denied_fail_closed(self):
+        transport = self._transport(['10.0.0.5'])
+        with self.assertRaises(ValueError) as caught:
+            transport._validated_address('https://provider.example.com/publish')
+        self.assertEqual(str(caught.exception), 'TRANSPORT_DNS_DENIED')
+
+    def test_link_local_metadata_denied(self):
+        transport = self._transport(['169.254.169.254'])
+        with self.assertRaises(ValueError) as caught:
+            transport._validated_address('https://provider.example.com/publish')
+        self.assertEqual(str(caught.exception), 'TRANSPORT_DNS_DENIED')
+
+    def test_mixed_resolution_denied_fail_closed(self):
+        transport = self._transport(['93.184.216.34', '10.0.0.5'])
+        with self.assertRaises(ValueError) as caught:
+            transport._validated_address('https://provider.example.com/publish')
+        self.assertEqual(str(caught.exception), 'TRANSPORT_DNS_DENIED')
+
+    def test_empty_resolution_denied_fail_closed(self):
+        transport = self._transport([])
+        with self.assertRaises(ValueError) as caught:
+            transport._validated_address('https://provider.example.com/publish')
+        self.assertEqual(str(caught.exception), 'TRANSPORT_DNS_DENIED')
+
+    def test_dispatch_to_denied_resolution_never_connects(self):
+        transport = self._transport(['192.168.1.10'])
+        with self.assertRaises(ValueError) as caught:
+            self._attempt(transport)
+        self.assertEqual(str(caught.exception), 'TRANSPORT_DNS_DENIED')
+        self.assertEqual(self.provider.post_count, 0)
+        self.assertEqual(transport._history, [])
+
+    def test_pinned_connection_mechanics_reach_server(self):
+        # The pinned-connection classes are exercised directly against the
+        # fake server; a real TLS-host pinning exercise happens at the
+        # recorded live smoke (T-PR3c).
+        pinned = _PinnedHTTPConnection('127.0.0.1', self.provider.port,
+                                       pinned_ip='127.0.0.1')
+        pinned.request('POST', '/provider/publish', body=b'{}',
+                       headers={'Idempotency-Key': 'IDEM-PIN-1',
+                                'Authorization': 'Bearer ' + SECRET})
+        response = pinned.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.provider.records.get('IDEM-PIN-1'), 'succeeded')
 
 
 class TransportLedgerContractTests(unittest.TestCase):
